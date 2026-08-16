@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+# Read and write the one settings file, for humans and for the config panel.
+#
+#   omantra-config list                     effective settings, KEY=value
+#   omantra-config get OMANTRA_ENDPOINT     one value
+#   omantra-config set OMANTRA_AGENT codex  write one or more KEY VALUE pairs
+#   omantra-config unset OMANTRA_THREADS    back to the built-in default
+#   omantra-config json                     the same, typed, for the panel
+#   omantra-config check                    is the model server answering?
+#
+# The panel in the bar is a front-end for exactly this: it loads `json`, saves
+# with `set`, and tests with `check`. Everything the GUI can do is therefore
+# also doable from a terminal and over ssh, and there is one validator rather
+# than one per front-end.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+. "$ROOT/lib/config.sh"
+
+die() { echo "omantra-config: $1" >&2; exit 1; }
+
+usage() {
+  cat <<EOF
+usage: omantra-config <command> [args]
+
+  list                  print every effective setting as KEY=value
+  get <KEY>             print one value
+  set <KEY> <VALUE>...  write one or more settings and print the file path
+  unset <KEY>...        drop settings, restoring the built-in default
+  json                  every effective setting as a JSON object
+  check [URL]           exit 0 if a model server answers (default: the endpoint)
+  path                  print the config file path
+  keys                  print settable keys, one per line, with their label
+
+Settings:
+$(for row in "${OMANTRA_SETTINGS[@]}"; do
+    IFS='|' read -r key type _ label <<<"$row"
+    printf '  %-24s %-12s %s\n' "$key" "$type" "$label"
+  done)
+EOF
+}
+
+# ---- Validation -------------------------------------------------------------
+#
+# Every write goes through here, whichever front-end asked for it. A GUI that
+# validates its own fields is a second opinion waiting to disagree with this
+# one; the panel's job is to show what this says.
+validate() {
+  local key="$1" value="$2" row type lo hi
+  row="$(omantra_setting_row "$key")" || die "unknown setting: $key (see \`omantra-config keys\`)"
+  IFS='|' read -r _ type _ _ <<<"$row"
+
+  case "$type" in
+    int:*)
+      lo="$(cut -d: -f2 <<<"$type")"
+      hi="$(cut -d: -f3 <<<"$type")"
+      [[ "$value" =~ ^[0-9]+$ ]] || die "$key must be a whole number, got: $value"
+      [ "$value" -ge "$lo" ] && [ "$value" -le "$hi" ] ||
+        die "$key must be between $lo and $hi, got: $value"
+      ;;
+    bool)
+      [ "$value" = "true" ] || [ "$value" = "false" ] ||
+        die "$key must be true or false, got: $value"
+      ;;
+    url)
+      [[ "$value" =~ ^https?://[^[:space:]]+$ ]] ||
+        die "$key must be an http(s) URL, got: $value"
+      ;;
+    command)
+      [ -n "$value" ] || die "$key cannot be empty"
+      [[ "$value" =~ [[:space:]] ]] &&
+        die "$key must be a single command with no arguments, got: $value"
+      # Not fatal: an agent can be installed after it is configured, and
+      # refusing to save a name that is merely absent today is the more
+      # annoying failure of the two.
+      command -v "$value" >/dev/null || echo "omantra-config: note: $value is not on PATH" >&2
+      ;;
+    path)
+      [ -n "$value" ] || die "$key cannot be empty"
+      # shellcheck disable=SC2088  # matching a literal tilde is the point:
+      # the loader expands `~/` when it reads the file, so the panel and a
+      # hand-edit may both legitimately hand one over here.
+      case "$value" in /*|"~/"*) ;; *) die "$key must be an absolute path, got: $value" ;; esac
+      ;;
+  esac
+}
+
+# ---- Reading ----------------------------------------------------------------
+
+effective() {
+  local key="$1"
+  printf '%s' "${!key-}"
+}
+
+cmd_list() {
+  local row key
+  for row in "${OMANTRA_SETTINGS[@]}"; do
+    key="${row%%|*}"
+    printf '%s=%s\n' "$key" "$(effective "$key")"
+  done
+}
+
+cmd_get() {
+  [ $# -eq 1 ] || die "get takes exactly one key"
+  omantra_setting_row "$1" >/dev/null || die "unknown setting: $1"
+  printf '%s\n' "$(effective "$1")"
+}
+
+# Typed, because the widget binds these straight to QML properties and a
+# string "false" is true over there.
+cmd_json() {
+  local row key type args=() filter="{}"
+  for row in "${OMANTRA_SETTINGS[@]}"; do
+    IFS='|' read -r key type _ _ <<<"$row"
+    args+=(--arg "$key" "$(effective "$key")")
+    case "$type" in
+      int:*) filter="$filter | .[\"$key\"] = (\$$key | tonumber)" ;;
+      bool)  filter="$filter | .[\"$key\"] = (\$$key == \"true\")" ;;
+      *)     filter="$filter | .[\"$key\"] = \$$key" ;;
+    esac
+  done
+  jq -nc "${args[@]}" --arg configFile "$OMANTRA_CONFIG_FILE" \
+    "$filter | .configFile = \$configFile"
+}
+
+cmd_keys() {
+  local row key label
+  for row in "${OMANTRA_SETTINGS[@]}"; do
+    IFS='|' read -r key _ _ label <<<"$row"
+    printf '%s\t%s\n' "$key" "$label"
+  done
+}
+
+# ---- Writing ----------------------------------------------------------------
+#
+# Rewrite rather than append: a settings file that grows a new line every save
+# ends up with three answers to the same question and the last one silently
+# winning. Comments and unknown lines are carried through, so hand-edits and
+# panel saves can share a file.
+rewrite() {
+  # Nameref rather than a serialized argument, so `set` and `unset` can hand
+  # over an associative array; `_changes` maps KEY -> value, or to the empty
+  # string to drop the key. The underscore keeps the nameref from pointing at
+  # itself when the caller's array is called `changes`.
+  local -n _changes="$1"
+  local tmp line key seen=()
+
+  mkdir -p "$(dirname "$OMANTRA_CONFIG_FILE")"
+  tmp="$(mktemp "$OMANTRA_CONFIG_FILE.XXXXXX")"
+
+  if [ -f "$OMANTRA_CONFIG_FILE" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      key=""
+      case "$line" in
+        '#'*|'') ;;
+        *=*) key="${line%%=*}"; key="${key//[[:space:]]/}" ;;
+      esac
+
+      if [ -n "$key" ] && [ -n "${_changes[$key]+set}" ]; then
+        # Written once, at the position the key already had — so a file the
+        # user has ordered and commented keeps its shape across saves.
+        if [[ " ${seen[*]-} " != *" $key "* ]]; then
+          seen+=("$key")
+          [ -n "${_changes[$key]}" ] && printf '%s=%s\n' "$key" "${_changes[$key]}"
+        fi
+        continue
+      fi
+      printf '%s\n' "$line"
+    done < "$OMANTRA_CONFIG_FILE" > "$tmp"
+  else
+    cat > "$tmp" <<'EOF'
+# Omantra settings. Written by the config panel and by `omantra-config set`;
+# safe to edit by hand. One KEY=value per line, no quoting needed.
+#
+# Anything exported in the environment wins over this file, so a one-off
+# `OMANTRA_ENDPOINT=… omantra "…"` still works.
+EOF
+  fi
+
+  for key in "${!_changes[@]}"; do
+    [[ " ${seen[*]-} " == *" $key "* ]] && continue
+    [ -n "${_changes[$key]}" ] || continue
+    printf '%s=%s\n' "$key" "${_changes[$key]}" >> "$tmp"
+  done
+
+  # Atomic: a panel saving while `omantra` is reading should hand it the old
+  # file or the new one, never half of either.
+  mv "$tmp" "$OMANTRA_CONFIG_FILE"
+}
+
+cmd_set() {
+  [ $# -ge 2 ] || die "set takes KEY VALUE pairs"
+  [ $(($# % 2)) -eq 0 ] || die "set takes KEY VALUE pairs — odd number of arguments"
+
+  # shellcheck disable=SC2034  # read through rewrite()'s nameref.
+  local -A changes=()
+  while [ $# -gt 0 ]; do
+    validate "$1" "$2"
+    changes["$1"]="$2"
+    shift 2
+  done
+
+  rewrite changes
+  printf '%s\n' "$OMANTRA_CONFIG_FILE"
+}
+
+cmd_unset() {
+  [ $# -ge 1 ] || die "unset takes at least one key"
+
+  # shellcheck disable=SC2034  # read through rewrite()'s nameref.
+  local -A changes=()
+  local key
+  for key in "$@"; do
+    omantra_setting_row "$key" >/dev/null || die "unknown setting: $key"
+    # shellcheck disable=SC2034  # read through rewrite()'s nameref.
+    changes["$key"]=""
+  done
+
+  rewrite changes
+  printf '%s\n' "$OMANTRA_CONFIG_FILE"
+}
+
+# ---- Entry point ------------------------------------------------------------
+
+command_name="${1:-}"
+[ $# -gt 0 ] && shift
+
+case "$command_name" in
+  list)   cmd_list ;;
+  get)    cmd_get "$@" ;;
+  set)    cmd_set "$@" ;;
+  unset)  cmd_unset "$@" ;;
+  json)   cmd_json ;;
+  keys)   cmd_keys ;;
+  path)   printf '%s\n' "$OMANTRA_CONFIG_FILE" ;;
+  # The panel asks this before offering to save an endpoint, so it accepts a
+  # candidate URL that has not been written anywhere yet.
+  check)
+    OMANTRA_ENDPOINT="${1:-$OMANTRA_ENDPOINT}"
+    if omantra_endpoint_up; then
+      echo "answering: $OMANTRA_ENDPOINT"
+    else
+      echo "no answer: $OMANTRA_ENDPOINT" >&2
+      exit 1
+    fi
+    ;;
+  ""|-h|--help|help) usage ;;
+  *)      usage >&2; die "unknown command: $command_name" ;;
+esac

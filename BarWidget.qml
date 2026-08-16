@@ -27,12 +27,29 @@ BarWidget {
 
   readonly property string transcribeCommand: setting("transcribeCommand", "") || (pluginDir + "/bin/omantra-transcribe")
   readonly property string interpreterCommand: setting("interpreterCommand", "") || (pluginDir + "/bin/omantra")
-  readonly property int threads: setting("threads", 6)
-  readonly property int maxSeconds: setting("maxSeconds", 300)
-  readonly property bool copyToClipboard: setting("copyToClipboard", true)
-  readonly property bool typeOut: setting("typeOut", false)
-  readonly property bool notifyOnDone: setting("notify", true)
-  readonly property bool overlayEnabled: setting("overlay", true)
+  readonly property string configCommand: pluginDir + "/bin/omantra-config"
+
+  // What the config panel wrote, reloaded whenever it saves. The scripts read
+  // the same file directly, so this copy exists only for the settings the
+  // widget itself acts on.
+  property var config: ({})
+
+  // Precedence, highest first: the config file, this widget's shell.json entry,
+  // the built-in default. The file wins because it is the one store both halves
+  // read — a value set in the panel has to mean the same thing to the widget
+  // and to `omantra` run from a keybind — while shell.json still works for
+  // anyone who set these before the panel existed.
+  function configured(key, fallback) {
+    var value = config ? config[key] : undefined
+    return value === undefined || value === null ? fallback : value
+  }
+
+  readonly property int threads: configured("OMANTRA_THREADS", setting("threads", 6))
+  readonly property int maxSeconds: configured("OMANTRA_MAX_SECONDS", setting("maxSeconds", 300))
+  readonly property bool copyToClipboard: configured("OMANTRA_COPY_CLIPBOARD", setting("copyToClipboard", true))
+  readonly property bool typeOut: configured("OMANTRA_TYPE_OUT", setting("typeOut", false))
+  readonly property bool notifyOnDone: configured("OMANTRA_NOTIFY", setting("notify", true))
+  readonly property bool overlayEnabled: configured("OMANTRA_OVERLAY", setting("overlay", true))
 
   // "dictate" puts the transcript on the clipboard; "command" hands it to the
   // interpreter to act on. Chosen when recording starts and read when it lands, so
@@ -88,7 +105,7 @@ BarWidget {
     if (working) return "Transcribing…"
     if (lastError !== "") return "Failed: " + lastError
     if (lastText !== "") return (commandMode ? "Sent: " : "Copied: ") + lastText
-    return "Dictate — click to record"
+    return "Dictate — click to record · middle click for settings"
   }
 
   function start(requestedMode) {
@@ -180,6 +197,13 @@ BarWidget {
     if (notifyOnDone) notify("Copied again", lastText)
   }
 
+  // Never over a live take: the panel takes the keyboard, and the overlay is
+  // holding it for esc while the mic is hot.
+  function openConfig() {
+    if (busy) return
+    configPanel.toggle()
+  }
+
   function notify(title, body) {
     Quickshell.execDetached({
       command: ["notify-send", "--app-name=Omantra", "--icon=audio-input-microphone", title, body]
@@ -225,6 +249,37 @@ BarWidget {
     level: root.level
     onStopRequested: root.stop()
     onCancelRequested: root.cancel()
+  }
+
+  // Settings live in a file both halves read, so the panel is a front-end for
+  // `omantra-config` rather than a second store — see ConfigPanel.qml.
+  ConfigPanel {
+    id: configPanel
+    screen: root.QsWindow.window ? root.QsWindow.window.screen : null
+    configCommand: root.configCommand
+    onSaved: configProc.running = true
+  }
+
+  // The widget's copy of the settings the panel writes. Read once at startup
+  // and again after every save; a take in flight keeps the values it started
+  // with, which is the behaviour you want when the thing being edited is the
+  // recording length.
+  Process {
+    id: configProc
+    running: true
+    command: [root.configCommand, "json"]
+    stdout: StdioCollector { waitForEnd: true }
+
+    onExited: function(exitCode) {
+      if (exitCode !== 0) return
+      try {
+        root.config = JSON.parse(String(configProc.stdout.text || "{}"))
+      } catch (e) {
+        // A widget that can't read the file still records and still
+        // transcribes; it just uses the defaults it was built with.
+        console.warn("omantra: could not parse omantra-config json: " + e)
+      }
+    }
   }
 
   // Mic level for the overlay's meter, in parallel with the recording. ffmpeg
@@ -319,6 +374,7 @@ BarWidget {
     function status(): string { return root.phase }
     function mode(): string { return root.mode }
     function last(): string { return root.lastText }
+    function config(): void { root.openConfig() }
   }
 
   WidgetButton {
@@ -334,7 +390,10 @@ BarWidget {
 
     onPressed: function(b) {
       if (b === Qt.RightButton) root.recopy()
-      else if (b === Qt.MiddleButton) root.cancel()
+      // Middle click means "get me out of this" mid-take; there is nothing to
+      // get out of when idle, so the same button opens the settings there
+      // rather than spending a third gesture on a panel nobody opens twice.
+      else if (b === Qt.MiddleButton) root.busy ? root.cancel() : root.openConfig()
       else root.toggle("dictate")
     }
   }

@@ -16,25 +16,50 @@ MANIFEST="$ROOT/manifest.json"
 WIDGET="$ROOT/BarWidget.qml"
 
 # Source the config in a clean environment so an exported override in the
-# developer's shell can't make a mismatch look like agreement.
-config_value() { env -u "$1" -i HOME="$HOME" bash -c ". '$ROOT/lib/config.sh'; printf '%s' \"\${$1}\""; }
+# developer's shell can't make a mismatch look like agreement — and with the
+# config file pointed at nothing, so the developer's own saved settings are not
+# mistaken for the built-in defaults either.
+config_value() {
+  env -u "$1" -i HOME="$HOME" OMANTRA_CONFIG_FILE=/dev/null \
+    bash -c ". '$ROOT/lib/config.sh'; printf '%s' \"\${$1}\""
+}
 
 # The literal in `setting("key", <default>)`.
 qml_default() { sed -n "s/.*setting(\"$1\", \\([^)]*\\)).*/\\1/p" "$WIDGET" | head -1; }
 
+# The settings table in config.sh names, for each variable, the manifest key
+# that is the same knob — so the list of things to check is the list itself
+# rather than a copy of it that can fall behind.
+settings_table() {
+  env -i HOME="$HOME" OMANTRA_CONFIG_FILE=/dev/null \
+    bash -c ". '$ROOT/lib/config.sh'; printf '%s\n' \"\${OMANTRA_SETTINGS[@]}\""
+}
+
 echo "defaults agree across config.sh / manifest.json / BarWidget.qml"
 
-assert_eq "$(config_value OMANTRA_THREADS)" \
-          "$(jq -r '.barWidget.defaults.threads' "$MANIFEST")" \
-          "threads: config.sh matches manifest defaults"
-assert_eq "$(config_value OMANTRA_THREADS)" "$(qml_default threads)" \
-          "threads: config.sh matches the QML fallback"
+while IFS='|' read -r var _ key _; do
+  [ "$key" = "-" ] && continue
+  assert_eq "$(config_value "$var")" \
+            "$(jq -r --arg k "$key" '.barWidget.defaults[$k]' "$MANIFEST")" \
+            "$key: config.sh ($var) matches manifest defaults"
+  assert_eq "$(config_value "$var")" "$(qml_default "$key")" \
+            "$key: config.sh ($var) matches the QML fallback"
+done < <(settings_table)
 
-assert_eq "$(config_value OMANTRA_MAX_SECONDS)" \
-          "$(jq -r '.barWidget.defaults.maxSeconds' "$MANIFEST")" \
-          "maxSeconds: config.sh matches manifest defaults"
-assert_eq "$(config_value OMANTRA_MAX_SECONDS)" "$(qml_default maxSeconds)" \
-          "maxSeconds: config.sh matches the QML fallback"
+echo
+echo "the config panel offers every setting"
+
+# A knob added to the table but not to the panel is invisible to anyone who
+# never opens a terminal — which is the audience the panel is for.
+PANEL="$ROOT/ConfigPanel.qml"
+while IFS='|' read -r var _ _ _; do
+  if grep -q "\"$var\"" "$PANEL"; then
+    pass "$var has a field in ConfigPanel.qml"
+  else
+    fail "$var is settable but ConfigPanel.qml never mentions it"
+  fi
+  TESTS_RUN=$((TESTS_RUN + 1))
+done < <(settings_table)
 
 echo
 echo "manifest.json is internally consistent"

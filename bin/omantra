@@ -93,6 +93,15 @@ Reply with JSON only.
 EOF
 )"
 
+# The endpoint is optional infrastructure the user starts themselves, so "not
+# running" is the most likely failure here — and it used to surface only as a
+# curl error at the very end, after a sentence had been recorded, transcribed
+# and thrown away. Two seconds up front buys a message that names the thing to
+# start.
+if ! omantra_endpoint_up; then
+  die "no model server at $OMANTRA_ENDPOINT — start one, e.g. llama-server --model <model>.gguf --port 8081 --jinja"
+fi
+
 request="$(jq -n \
   --arg system "$SYSTEM" \
   --arg user "$transcript" \

@@ -56,7 +56,8 @@ Then add the keybindings from `hypr/bindings.example.lua` to
 `~/.config/hypr/bindings.lua`.
 
 Command mode also needs an OpenAI-compatible endpoint. Any llama.cpp server
-will do:
+will do — point Omantra at it from the settings panel, or leave the default and
+run one locally:
 
 ```bash
 llama-server --model ~/models/Qwen3-4B-Q4_K_M.gguf --port 8081 \
@@ -71,6 +72,7 @@ llama-server --model ~/models/Qwen3-4B-Q4_K_M.gguf --port 8081 \
 | `Super+Alt+D`, or left click | dictate | transcript goes to the clipboard |
 | right click | — | re-copy the last transcript |
 | middle click, `Super+Alt+Shift+D`, Esc | — | cancel and discard |
+| middle click while idle, `Super+Alt+C` | — | open the settings panel |
 
 The bar glyph shows the mode: 󰚩 command, 󰑊 recording, 󰔟 transcribing.
 
@@ -104,6 +106,43 @@ with the `overlay` setting.
 omantra-transcribe meeting.m4a           # any format; ffmpeg converts
 omantra-transcribe meeting.m4a --json    # word-level timestamps
 ```
+
+## Settings
+
+Middle-click the mic widget — or `Super+Alt+C` — for a card with the things
+worth changing: which model server command mode talks to, which coding agent a
+project opens with, where projects go, and how a dictated take is delivered.
+The endpoint field has a **Test** button, because the reason to open this panel
+is usually that command mode just failed and the question is whether anything
+is listening.
+
+Nothing is written until Save. The panel edits no state of its own: it is a
+front-end for
+
+```bash
+omantra-config list                                    # effective settings
+omantra-config set OMANTRA_AGENT codex
+omantra-config set OMANTRA_ENDPOINT http://box:8081/v1/chat/completions
+omantra-config unset OMANTRA_THREADS                   # back to the default
+omantra-config check                                   # is the server up?
+```
+
+which writes `~/.config/omantra/config`, one `KEY=value` per line, safe to edit
+by hand. Every write goes through one validator, so a GUI cannot save a thread
+count of 99 or an endpoint that isn't a URL — and there is no second opinion in
+QML to disagree with the first.
+
+That file, rather than the plugin settings store, is where these live, because
+both halves have to agree: `bin/omantra` runs from a Hyprland keybind with no
+idea what the bar widget believes. The file is read, never sourced — a value
+with a `$(` in it is a bad endpoint, not an execution — and precedence runs
+**environment > file > default**, so
+
+```bash
+OMANTRA_ENDPOINT=http://otherbox:8081/v1/chat/completions omantra "…"
+```
+
+still tries a server without committing to it.
 
 ## How command mode stays safe
 
@@ -144,10 +183,12 @@ here asks for confirmation.
 manifest.json                 plugin declaration + settings schema
 BarWidget.qml                 the bar widget: two Processes, one state machine
 VoiceOverlay.qml              the centered "speak now" card
+ConfigPanel.qml               the settings card — a front-end for omantra-config
 lib/config.sh                 paths, versions and defaults — sourced by everything
 lib/project.sh                slugify + find_project, the pure half of dispatch
 bin/omantra-transcribe        audio file -> text
 bin/omantra-supertap          double-tap detector for the Super key
+bin/omantra-config            read and write ~/.config/omantra/config
 bin/omantra                   transcript -> LLM -> action
 test/                         `make test` — no model, desktop or network needed
 hypr/bindings.example.lua     keybindings to copy
@@ -162,6 +203,11 @@ Three things need a value that bash, QML and JSON all have to agree on, and
 none of them can import from the others. `lib/config.sh` is the source of truth
 for the bash side; `manifest.json` is the source for the widget; and
 `test/test_config.sh` fails the build if they drift apart.
+
+The settable ones are a table at the top of `lib/config.sh` — variable, type,
+matching manifest key, label. The file parser, the validator, the JSON the
+panel loads and the test that keeps the manifest in step all read that table,
+so a new setting is a row there and a field in `ConfigPanel.qml`.
 
 ## Developing
 
@@ -182,10 +228,16 @@ symlinks it in as a pre-commit hook so a failure arrives before the commit
 rather than after the push. Git does not install hooks on clone, so that one is
 a deliberate opt-in per checkout; `git commit --no-verify` skips it.
 
+The suite also covers the settings file, which is the one thing the panel and
+the scripts both depend on: precedence, quoting, junk lines, the keys a file is
+allowed to set at all, and that a value is never executed.
+
 Environment overrides, all read through `lib/config.sh`: `OMANTRA_THREADS`,
 `OMANTRA_MODEL`, `OMANTRA_SHERPA_BIN`, `OMANTRA_ENDPOINT`, `OMANTRA_PROJECTS`,
 `OMANTRA_AGENT` (defaults to `claude`), `OMANTRA_TAP_WINDOW_MS`,
-`OMANTRA_LOG`, `OMANTRA_LOG_MAX_LINES`.
+`OMANTRA_LOG`, `OMANTRA_LOG_MAX_LINES`, `OMANTRA_CONFIG_FILE`. The ones the
+panel writes are also settable with `omantra-config set`; see
+`omantra-config keys` for the list.
 
 ## Notes
 

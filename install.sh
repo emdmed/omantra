@@ -27,6 +27,24 @@ if [ ${#missing[@]} -gt 0 ]; then
   exit 1
 fi
 
+# A warning, not an error: dictation is the half most people use and it never
+# touches the LLM. The server is also not ours to install — the build is
+# hardware-specific and the model choice is a VRAM tradeoff — so the most this
+# can usefully do is say it is missing before you find out mid-sentence.
+if ! omantra_endpoint_up; then
+  say "Note: no model server at $OMANTRA_ENDPOINT"
+  cat <<'EOF'
+  Dictation works without it. Command mode (double-tap Super) needs an
+  OpenAI-compatible endpoint; any llama.cpp server will do:
+
+    llama-server --model ~/models/Qwen3-4B-Q4_K_M.gguf --port 8081 \
+      --ctx-size 32768 --jinja -ngl 99 -np 1
+
+  Point somewhere else with the config panel (middle click the mic widget),
+  or with: omantra-config set OMANTRA_ENDPOINT http://host:port/v1/chat/completions
+EOF
+fi
+
 # ---- sherpa-onnx runtime ----------------------------------------------------
 
 if [ -x "$OMANTRA_SHERPA_BIN/sherpa-onnx-offline" ]; then
@@ -66,7 +84,7 @@ fi
 
 say "Linking scripts into $LOCAL_BIN"
 mkdir -p "$LOCAL_BIN"
-for script in omantra omantra-transcribe omantra-supertap; do
+for script in omantra omantra-config omantra-transcribe omantra-supertap; do
   ln -sfn "$REPO/bin/$script" "$LOCAL_BIN/$script"
   echo "  $LOCAL_BIN/$script -> $REPO/bin/$script"
 done
@@ -97,5 +115,6 @@ then run:  hyprctl reload && omarchy restart shell
 Verify with:
   omantra-transcribe "$OMANTRA_MODEL/test_wavs/0.wav"
   omantra --dry-run "create a new project for a todo app"
+  omantra-config list
   omarchy-shell omantra status
 EOF

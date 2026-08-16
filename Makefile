@@ -13,8 +13,8 @@ test:
 # runtime dependency.
 lint:
 	@if command -v shellcheck >/dev/null; then \
-	  shellcheck -x bin/omantra bin/omantra-transcribe bin/omantra-supertap \
-	    install.sh lib/*.sh test/*.sh hooks/pre-commit && echo "shellcheck: clean"; \
+	  shellcheck -x bin/* install.sh lib/*.sh test/*.sh hooks/pre-commit \
+	    && echo "shellcheck: clean"; \
 	else \
 	  echo "shellcheck not installed — skipping (omarchy pkg add shellcheck)"; \
 	fi
