@@ -70,9 +70,33 @@ llama-server --model ~/models/Qwen3-4B-Q4_K_M.gguf --port 8081 \
 | double-tap Super | command | transcript goes to the interpreter, which acts on it |
 | `Super+Alt+D`, or left click | dictate | transcript goes to the clipboard |
 | right click | — | re-copy the last transcript |
-| middle click, `Super+Alt+Shift+D` | — | cancel and discard |
+| middle click, `Super+Alt+Shift+D`, Esc | — | cancel and discard |
 
 The bar glyph shows the mode: 󰚩 command, 󰑊 recording, 󰔟 transcribing.
+
+While a take is running, a card lands in the middle of the screen over a dimmed
+desktop — the Omarchy mark, a level meter, the mode, and the clock — and stays
+until the transcript comes back, then flashes what it heard. The double-tap has
+no visible target to aim at, so the answer to "is it listening?" has to arrive
+where the eyes already are.
+
+Nothing on the card animates on a timer. The only thing that moves is the meter,
+and it moves because the mic heard something: a second ffmpeg reads the same
+source and prints an RMS figure 20 times a second, and the bars follow it. A card
+that pulses on its own says "I am a widget"; a card that answers your voice says
+"I can hear you". The floor is set by the quietest moment of the take rather than
+by a constant, because one machine's silence is -38 dBFS and another's is -55,
+and a meter that shows a quarter of a bar in an empty room has stopped saying
+anything.
+
+The card is the only clickable part of that surface: clicking it ends the take,
+and clicks anywhere else go to the window underneath. Esc throws the take away.
+That last one is why the card holds the keyboard while the mic is hot — a layer
+surface only receives keys if it asks for them — and hands it straight back the
+moment the take ends. Hyprland resolves its own keybinds before the focused
+surface sees anything, so Super gestures keep working throughout; the cost is
+that the window behind can't be typed into mid-take. Turn the whole thing off
+with the `overlay` setting.
 
 `omantra-transcribe` also stands alone:
 
@@ -111,6 +135,7 @@ system prompt. Keep them non-destructive; nothing here asks for confirmation.
 ```
 manifest.json                 plugin declaration + settings schema
 BarWidget.qml                 the bar widget: two Processes, a state machine
+VoiceOverlay.qml              the centered "speak now" card
 bin/omantra-transcribe        audio file -> text
 bin/omantra-supertap          double-tap detector for the Super key
 bin/omantra                   transcript -> LLM -> action
