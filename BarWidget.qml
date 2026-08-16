@@ -9,8 +9,8 @@ import qs.Ui
 // Left click starts recording and the widget turns urgent with a running
 // clock, so "am I still recording?" is answerable at a glance. Left click
 // again stops and hands the wav to sherpa-onnx + Parakeet; the transcript
-// goes to the clipboard. Right click re-copies the last one, middle click
-// throws the recording away.
+// goes to the clipboard. Right click opens the settings, middle click throws
+// a live recording away or re-copies the last transcript when there is none.
 //
 // Both halves are plain subprocesses — pw-record writes the wav, the
 // `transcribe` wrapper reads it — so nothing here needs the network and the
@@ -92,7 +92,11 @@ BarWidget {
     (!overlayEnabled || phase === "idle" || phase === "cancelling") ? "" : phase
 
   readonly property bool commandMode: mode === "command"
-  readonly property string glyph: busy ? (commandMode ? "󰚩" : (recording ? "󰑊" : "󰔟")) : "󰍬"
+  // At rest this is a head with sound coming out of it, not a microphone: the
+  // stock omarchy.microphone widget is already a microphone, down to the same
+  // glyph, and two identical mic icons in one bar is one too many. This one is
+  // about speaking to the machine rather than about the input device.
+  readonly property string glyph: busy ? (commandMode ? "󰚩" : (recording ? "󰑊" : "󰔟")) : "󰗋"
 
   readonly property string elapsedLabel: {
     var m = Math.floor(elapsed / 60)
@@ -105,7 +109,7 @@ BarWidget {
     if (working) return "Transcribing…"
     if (lastError !== "") return "Failed: " + lastError
     if (lastText !== "") return (commandMode ? "Sent: " : "Copied: ") + lastText
-    return "Dictate — click to record · middle click for settings"
+    return "Dictate — click to record · right click for settings"
   }
 
   function start(requestedMode) {
@@ -388,12 +392,13 @@ BarWidget {
     tooltipText: root.statusText
     horizontalMargin: 8.5
 
+    // One meaning per button per state, rather than three buttons and five
+    // meanings: left runs the take, right is the settings, and middle is
+    // whichever "undo" the current state has — throw this take away while the
+    // mic is hot, hand me the last transcript again when it isn't.
     onPressed: function(b) {
-      if (b === Qt.RightButton) root.recopy()
-      // Middle click means "get me out of this" mid-take; there is nothing to
-      // get out of when idle, so the same button opens the settings there
-      // rather than spending a third gesture on a panel nobody opens twice.
-      else if (b === Qt.MiddleButton) root.busy ? root.cancel() : root.openConfig()
+      if (b === Qt.RightButton) root.openConfig()
+      else if (b === Qt.MiddleButton) root.busy ? root.cancel() : root.recopy()
       else root.toggle("dictate")
     }
   }

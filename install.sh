@@ -40,7 +40,7 @@ if ! omantra_endpoint_up; then
     llama-server --model ~/models/Qwen3-4B-Q4_K_M.gguf --port 8081 \
       --ctx-size 32768 --jinja -ngl 99 -np 1
 
-  Point somewhere else with the config panel (middle click the mic widget),
+  Point somewhere else with the config panel (right click the widget),
   or with: omantra-config set OMANTRA_ENDPOINT http://host:port/v1/chat/completions
 EOF
 fi

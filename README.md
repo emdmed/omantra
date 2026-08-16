@@ -70,11 +70,14 @@ llama-server --model ~/models/Qwen3-4B-Q4_K_M.gguf --port 8081 \
 |---|---|---|
 | double-tap Super | command | transcript goes to the interpreter, which acts on it |
 | `Super+Alt+D`, or left click | dictate | transcript goes to the clipboard |
-| right click | — | re-copy the last transcript |
-| middle click, `Super+Alt+Shift+D`, Esc | — | cancel and discard |
-| middle click while idle, `Super+Alt+C` | — | open the settings panel |
+| right click, `Super+Alt+C` | — | open the settings panel |
+| middle click while idle | — | re-copy the last transcript |
+| middle click while recording, `Super+Alt+Shift+D`, Esc | — | cancel and discard |
 
-The bar glyph shows the mode: 󰚩 command, 󰑊 recording, 󰔟 transcribing.
+The bar glyph shows the mode: 󰗋 idle, 󰚩 command, 󰑊 recording, 󰔟 transcribing.
+Idle is a head with sound coming out of it rather than a microphone, because
+Omarchy's own mic widget is a microphone — down to the same glyph — and this
+one is about speaking to the machine, not about the input device.
 
 While a take is running, a card lands in the middle of the screen over a dimmed
 desktop — the Omarchy mark, a level meter, the mode, and the clock — and stays
@@ -109,7 +112,7 @@ omantra-transcribe meeting.m4a --json    # word-level timestamps
 
 ## Settings
 
-Middle-click the mic widget — or `Super+Alt+C` — for a card with the things
+Right-click the widget — or `Super+Alt+C` — for a card with the things
 worth changing: which model server command mode talks to, which coding agent a
 project opens with, where projects go, and how a dictated take is delivered.
 The endpoint field has a **Test** button, because the reason to open this panel
