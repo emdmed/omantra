@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Double-tap detector for the Super key, driving enrique.dictate.
+#
+# Hyprland can only tell us "Super was released"; the double-tap timing has to
+# live somewhere, so it lives here: each invocation either records the tap or,
+# if the previous one was recent enough, fires the toggle.
+set -euo pipefail
+
+STATE="${XDG_RUNTIME_DIR:-/tmp}/dictate-supertap"
+WINDOW_MS="${DICTATE_TAP_WINDOW_MS:-400}"
+
+now=$(( $(date +%s%N) / 1000000 ))
+last=0
+[ -f "$STATE" ] && last=$(cat "$STATE" 2>/dev/null || echo 0)
+
+delta=$(( now - last ))
+
+if [ "$last" -gt 0 ] && [ "$delta" -le "$WINDOW_MS" ]; then
+  # Clear rather than record, so a third tap starts a fresh pair instead of
+  # toggling again off the back of the second.
+  echo 0 > "$STATE"
+  exec omarchy-shell dictate toggleCommand
+fi
+
+echo "$now" > "$STATE"

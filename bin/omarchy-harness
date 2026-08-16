@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# Turn a spoken instruction into one desktop action, using the local LLM.
+#
+#   omarchy-harness "I want to create a new project to create a todo app"
+#     -> ~/projects/todo-app, git initialised, claude opened with a brief
+#
+# The model's only job is classification and slot-filling: it picks one action
+# from a fixed list and fills typed fields. It never emits a command, so a
+# misheard sentence can at worst pick the wrong action from a set that is
+# entirely non-destructive — it cannot invent one.
+set -euo pipefail
+
+ENDPOINT="${HARNESS_ENDPOINT:-http://127.0.0.1:8081/v1/chat/completions}"
+PROJECTS="${HARNESS_PROJECTS:-$HOME/projects}"
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-harness"
+LOG="$LOG_DIR/history.jsonl"
+
+dry_run=0
+if [ "${1:-}" = "--dry-run" ]; then
+  dry_run=1
+  shift
+fi
+
+transcript="$*"
+[ -z "$transcript" ] && transcript="$(cat)"
+transcript="$(printf '%s' "$transcript" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
+
+if [ -z "$transcript" ]; then
+  echo "omarchy-harness: nothing to interpret" >&2
+  exit 1
+fi
+
+mkdir -p "$LOG_DIR"
+
+notify() { notify-send --app-name=Harness --icon=utilities-terminal "$1" "${2:-}"; }
+
+die() {
+  notify "Harness failed" "$1"
+  echo "omarchy-harness: $1" >&2
+  exit 1
+}
+
+# ---- Slot filling -----------------------------------------------------------
+
+read -r -d '' SYSTEM <<'EOF' || true
+You convert a spoken instruction into exactly one desktop action.
+
+Actions:
+- new_project: the user wants to start something that does not exist yet.
+- open_project: the user names an existing project to resume work on.
+- unknown: the instruction fits neither, or is too vague to act on.
+
+Fields:
+- name: short kebab-case slug for the project, derived from the subject of the
+  request. "a todo app" -> "todo-app". Lowercase letters, digits and hyphens
+  only. Empty string when the action is unknown.
+- prompt: a first instruction to hand a coding agent, written in the
+  imperative and expanded into a useful brief of one or two sentences. Empty
+  string when the action is unknown.
+
+Reply with JSON only.
+EOF
+
+request="$(jq -n \
+  --arg system "$SYSTEM" \
+  --arg user "$transcript" \
+  '{
+    model: "local",
+    temperature: 0.1,
+    chat_template_kwargs: { enable_thinking: false },
+    messages: [
+      { role: "system", content: $system },
+      { role: "user", content: $user }
+    ],
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "action",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            action: { type: "string", enum: ["new_project","open_project","unknown"] },
+            name:   { type: "string" },
+            prompt: { type: "string" }
+          },
+          required: ["action","name","prompt"],
+          additionalProperties: false
+        }
+      }
+    }
+  }')"
+
+response="$(curl -sS --max-time 120 "$ENDPOINT" \
+  -H 'Content-Type: application/json' \
+  -d "$request")" || die "could not reach the model at $ENDPOINT"
+
+content="$(printf '%s' "$response" | jq -r '.choices[0].message.content // empty')"
+[ -z "$content" ] && die "model returned no content"
+
+action="$(printf '%s' "$content" | jq -r '.action // "unknown"')"
+name="$(printf '%s' "$content" | jq -r '.name // ""')"
+prompt="$(printf '%s' "$content" | jq -r '.prompt // ""')"
+
+# The schema constrains the shape, not the contents: re-slug here so a stray
+# slash or leading dot from the model can never escape $PROJECTS.
+slug="$(printf '%s' "$name" \
+  | tr '[:upper:]' '[:lower:]' \
+  | sed 's/[^a-z0-9]\+/-/g; s/^-\+//; s/-\+$//' \
+  | cut -c1-50)"
+
+jq -n --arg t "$transcript" --arg a "$action" --arg s "$slug" --arg p "$prompt" \
+  '{transcript:$t, action:$a, slug:$s, prompt:$p}' >> "$LOG"
+
+# ---- Dispatch ---------------------------------------------------------------
+
+# Runs claude through a login shell so it picks up mise shims from the profile,
+# and drops to a shell afterwards rather than closing the window on exit.
+open_claude() {
+  local dir="$1" initial="$2" title="$3"
+  if [ "$dry_run" = "1" ]; then
+    echo "would open terminal in $dir with prompt: $initial"
+    return
+  fi
+  setsid xdg-terminal-exec --title="$title" -- \
+    bash -lc 'cd "$1" && claude "$2"; exec bash -l' _ "$dir" "$initial" &
+}
+
+find_project() {
+  local want="$1"
+  [ -d "$PROJECTS/$want" ] && { printf '%s' "$want"; return 0; }
+  local match
+  match="$(ls -1 "$PROJECTS" 2>/dev/null | grep -ixF "$want" | head -1)"
+  [ -z "$match" ] && match="$(ls -1 "$PROJECTS" 2>/dev/null | grep -i -- "$want" | head -1)"
+  [ -z "$match" ] && return 1
+  printf '%s' "$match"
+}
+
+case "$action" in
+new_project)
+  [ -z "$slug" ] && die "could not name a project from: $transcript"
+  dir="$PROJECTS/$slug"
+
+  if [ -d "$dir" ]; then
+    notify "Project already exists" "Opening $slug"
+  elif [ "$dry_run" = "1" ]; then
+    echo "would create $dir"
+  else
+    mkdir -p "$dir"
+    git -C "$dir" init -q
+    notify "New project: $slug" "$prompt"
+  fi
+
+  open_claude "$dir" "$prompt" "claude: $slug"
+  ;;
+
+open_project)
+  [ -z "$slug" ] && die "no project named in: $transcript"
+  if ! match="$(find_project "$slug")"; then
+    notify "No such project" "Nothing in $PROJECTS matches \"$slug\""
+    exit 1
+  fi
+  [ "$dry_run" = "1" ] && echo "would open $PROJECTS/$match"
+  notify "Opening $match" "$prompt"
+  open_claude "$PROJECTS/$match" "$prompt" "claude: $match"
+  ;;
+
+*)
+  # Not understood is not a failure — hand the words back so the take is not
+  # lost, and let the user decide what to do with them.
+  [ "$dry_run" = "1" ] && echo "unknown action for: $transcript"
+  printf '%s' "$transcript" | wl-copy
+  notify "Not understood" "Copied to clipboard: $transcript"
+  exit 0
+  ;;
+esac

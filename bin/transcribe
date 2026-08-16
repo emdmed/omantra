@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Local English speech-to-text: sherpa-onnx + NVIDIA Parakeet TDT 0.6B v2 (int8).
+# Usage: transcribe <audio-file> [--json]
+set -euo pipefail
+
+SHERPA_VERSION="${SHERPA_VERSION:-1.13.5}"
+BIN="${TRANSCRIBE_BIN:-$HOME/opt/sherpa-onnx-v$SHERPA_VERSION-linux-x64-static/bin}"
+MODEL="${TRANSCRIBE_MODEL:-$HOME/models/asr/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8}"
+THREADS="${TRANSCRIBE_THREADS:-6}"
+
+if [ $# -lt 1 ]; then
+  echo "usage: transcribe <audio-file> [--json]" >&2
+  exit 1
+fi
+
+if [ ! -x "$BIN/sherpa-onnx-offline" ]; then
+  echo "transcribe: sherpa-onnx not found at $BIN — run install.sh" >&2
+  exit 1
+fi
+
+if [ ! -f "$MODEL/encoder.int8.onnx" ]; then
+  echo "transcribe: model not found at $MODEL — run install.sh" >&2
+  exit 1
+fi
+
+input=$1
+json=${2:-}
+
+# Parakeet wants 16 kHz mono 16-bit PCM; let ffmpeg handle anything else.
+wav=$(mktemp --suffix=.wav)
+trap 'rm -f "$wav"' EXIT
+ffmpeg -v error -y -i "$input" -ac 1 -ar 16000 -sample_fmt s16 "$wav"
+
+out=$("$BIN/sherpa-onnx-offline" \
+  --encoder="$MODEL/encoder.int8.onnx" \
+  --decoder="$MODEL/decoder.int8.onnx" \
+  --joiner="$MODEL/joiner.int8.onnx" \
+  --tokens="$MODEL/tokens.txt" \
+  --model-type=nemo_transducer \
+  --num-threads="$THREADS" \
+  "$wav" 2>/dev/null | grep -E '^\{')
+
+if [ "$json" = "--json" ]; then
+  echo "$out"
+else
+  echo "$out" | jq -r .text
+fi

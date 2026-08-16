@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "id": "enrique.dictate",
+  "name": "Dictate",
+  "version": "1.0.0",
+  "author": "enrique",
+  "license": "MIT",
+  "description": "Record from the microphone and transcribe it locally with sherpa-onnx + Parakeet. Nothing leaves the machine.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Dictate",
+    "description": "Left click records, click again to transcribe. Text lands on the clipboard.",
+    "category": "Audio",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "transcribeCommand": "",
+      "harnessCommand": "",
+      "threads": 6,
+      "maxSeconds": 300,
+      "copyToClipboard": true,
+      "typeOut": false,
+      "notify": true
+    },
+    "schema": [
+      {
+        "key": "transcribeCommand",
+        "type": "string",
+        "label": "Transcribe command (blank = bundled)",
+        "defaultValue": ""
+      },
+      {
+        "key": "harnessCommand",
+        "type": "string",
+        "label": "Command-mode harness (blank = bundled)",
+        "defaultValue": ""
+      },
+      {
+        "key": "threads",
+        "type": "integer",
+        "label": "Decoder threads",
+        "min": 1,
+        "max": 12,
+        "step": 1,
+        "defaultValue": 6
+      },
+      {
+        "key": "maxSeconds",
+        "type": "integer",
+        "label": "Max recording length (seconds)",
+        "min": 10,
+        "max": 3600,
+        "step": 10,
+        "defaultValue": 300
+      },
+      {
+        "key": "copyToClipboard",
+        "type": "boolean",
+        "label": "Copy transcript to clipboard",
+        "defaultValue": true
+      },
+      {
+        "key": "typeOut",
+        "type": "boolean",
+        "label": "Type transcript into the focused window",
+        "defaultValue": false
+      },
+      {
+        "key": "notify",
+        "type": "boolean",
+        "label": "Show a notification when done",
+        "defaultValue": true
+      }
+    ]
+  }
+}
