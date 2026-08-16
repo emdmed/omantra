@@ -50,10 +50,26 @@ cd ~/projects/omantra
 The installer pulls ~1 GB of runtime and models into `~/opt` and `~/models/asr`,
 symlinks `bin/` into `~/.local/bin`, and symlinks the checkout itself into
 `~/.config/omarchy/plugins/`. The symlink means the repo stays the single
-source of truth: edit here and the shell reads the change.
+source of truth — the shell loads the working copy, with no install step
+between editing a file and running it.
 
 Then add the keybindings from `hypr/bindings.example.lua` to
-`~/.config/hypr/bindings.lua`.
+`~/.config/hypr/bindings.lua`, and pick both halves up:
+
+```bash
+hyprctl reload && omarchy restart shell
+```
+
+The restart is not optional: the widget, the settings panel and the
+`omarchy-shell omantra …` calls the keybindings make all arrive with it.
+
+Check it landed:
+
+```bash
+omantra-transcribe ~/models/asr/*/test_wavs/0.wav   # the ASR half
+omantra-config list                                 # the settings half
+omarchy-shell omantra status                        # the widget half — "idle"
+```
 
 Command mode also needs an OpenAI-compatible endpoint. Any llama.cpp server
 will do — point Omantra at it from the settings panel, or leave the default and
@@ -119,8 +135,13 @@ The endpoint field has a **Test** button, because the reason to open this panel
 is usually that command mode just failed and the question is whether anything
 is listening.
 
-Nothing is written until Save. The panel edits no state of its own: it is a
-front-end for
+Nothing is written until Save; Esc or Cancel leaves without touching anything,
+and a rejected value keeps the card open with the reason under the fields. A
+save takes effect on the next take — the scripts read the file each run, and
+the widget reloads its copy when the panel saves — so there is nothing to
+restart.
+
+The panel edits no state of its own: it is a front-end for
 
 ```bash
 omantra-config list                                    # effective settings
@@ -244,9 +265,11 @@ panel writes are also settable with `omantra-config set`; see
 
 ## Notes
 
-- Editing `BarWidget.qml` usually hot-reloads, but adding or renaming an IPC
-  method needs a full `omarchy restart shell` — `rescanPlugins` reloads the code
-  while keeping the old IPC surface.
+- QML edits need `omarchy restart shell` in an installed checkout. The shell
+  hot-reloads files saved under `~/.config/omarchy/plugins/`, but this plugin is
+  a symlink to the repo, and the watcher does not follow it — a save changes
+  nothing, and `rescanPlugins` reloads the code while keeping the old IPC
+  surface, so a new IPC method needs the restart regardless.
 - The `omantra` IPC target binds to one bar instance, so on multiple monitors
   only one screen's widget animates. Route through `broadcast` if that matters.
 - Recording caps at `maxSeconds` (default 300) and transcribes what it has
