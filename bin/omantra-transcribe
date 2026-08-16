@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 # Local English speech-to-text: sherpa-onnx + NVIDIA Parakeet TDT 0.6B v2 (int8).
-# Usage: transcribe <audio-file> [--json]
+# Usage: omantra-transcribe <audio-file> [--json]
 set -euo pipefail
 
 SHERPA_VERSION="${SHERPA_VERSION:-1.13.5}"
-BIN="${TRANSCRIBE_BIN:-$HOME/opt/sherpa-onnx-v$SHERPA_VERSION-linux-x64-static/bin}"
-MODEL="${TRANSCRIBE_MODEL:-$HOME/models/asr/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8}"
-THREADS="${TRANSCRIBE_THREADS:-6}"
+BIN="${OMANTRA_SHERPA_BIN:-$HOME/opt/sherpa-onnx-v$SHERPA_VERSION-linux-x64-static/bin}"
+MODEL="${OMANTRA_MODEL:-$HOME/models/asr/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8}"
+THREADS="${OMANTRA_THREADS:-6}"
 
 if [ $# -lt 1 ]; then
-  echo "usage: transcribe <audio-file> [--json]" >&2
+  echo "usage: omantra-transcribe <audio-file> [--json]" >&2
   exit 1
 fi
 
 if [ ! -x "$BIN/sherpa-onnx-offline" ]; then
-  echo "transcribe: sherpa-onnx not found at $BIN — run install.sh" >&2
+  echo "omantra-transcribe: sherpa-onnx not found at $BIN — run install.sh" >&2
   exit 1
 fi
 
 if [ ! -f "$MODEL/encoder.int8.onnx" ]; then
-  echo "transcribe: model not found at $MODEL — run install.sh" >&2
+  echo "omantra-transcribe: model not found at $MODEL — run install.sh" >&2
   exit 1
 fi
 

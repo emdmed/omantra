@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "enrique.dictate",
-  "name": "Dictate",
+  "id": "enrique.omantra",
+  "name": "Omantra",
   "version": "1.0.0",
   "author": "enrique",
   "license": "MIT",
-  "description": "Record from the microphone and transcribe it locally with sherpa-onnx + Parakeet. Nothing leaves the machine.",
+  "description": "Speak to your desktop. Local speech-to-text, interpreted by a local LLM into desktop actions.",
   "kinds": [
     "bar-widget"
   ],
@@ -13,14 +13,14 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Dictate",
-    "description": "Left click records, click again to transcribe. Text lands on the clipboard.",
+    "displayName": "Omantra",
+    "description": "Double-tap Super to speak a command; left click to dictate to the clipboard.",
     "category": "Audio",
     "allowMultiple": false,
     "defaultSection": "right",
     "defaults": {
       "transcribeCommand": "",
-      "harnessCommand": "",
+      "interpreterCommand": "",
       "threads": 6,
       "maxSeconds": 300,
       "copyToClipboard": true,
@@ -35,9 +35,9 @@
         "defaultValue": ""
       },
       {
-        "key": "harnessCommand",
+        "key": "interpreterCommand",
         "type": "string",
-        "label": "Command-mode harness (blank = bundled)",
+        "label": "Interpreter for command mode (blank = bundled)",
         "defaultValue": ""
       },
       {

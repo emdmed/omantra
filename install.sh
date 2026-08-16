@@ -11,7 +11,7 @@ RELEASES="https://github.com/k2-fsa/sherpa-onnx/releases/download"
 OPT="$HOME/opt"
 MODELS="$HOME/models/asr"
 LOCAL_BIN="$HOME/.local/bin"
-PLUGIN_ID="enrique.dictate"
+PLUGIN_ID="enrique.omantra"
 PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -68,7 +68,7 @@ fi
 
 say "Linking scripts into $LOCAL_BIN"
 mkdir -p "$LOCAL_BIN"
-for script in transcribe dictate-supertap omarchy-harness; do
+for script in omantra omantra-transcribe omantra-supertap; do
   ln -sfn "$REPO/bin/$script" "$LOCAL_BIN/$script"
   echo "  $LOCAL_BIN/$script -> $REPO/bin/$script"
 done
@@ -97,7 +97,7 @@ Add the keybindings from hypr/bindings.example.lua to ~/.config/hypr/bindings.lu
 then run:  hyprctl reload && omarchy restart shell
 
 Verify with:
-  transcribe "$MODELS/$MODEL_NAME/test_wavs/0.wav"
-  omarchy-harness --dry-run "create a new project for a todo app"
-  omarchy-shell dictate status
+  omantra-transcribe "$MODELS/$MODEL_NAME/test_wavs/0.wav"
+  omantra --dry-run "create a new project for a todo app"
+  omarchy-shell omantra status
 EOF

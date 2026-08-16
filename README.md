@@ -1,4 +1,4 @@
-# omarchy-harness
+# omantra
 
 Speak to your desktop. Everything runs locally — no audio, no text, and no
 instruction leaves the machine.
@@ -34,7 +34,7 @@ Measured on that CPU, transcribing a 7.4 s clip:
 
 About 11× faster than realtime, and it regresses past 6 threads — the chip has
 6 physical cores and SMT contention costs more than the extra threads return.
-`TRANSCRIBE_THREADS` overrides the default.
+`OMANTRA_THREADS` overrides the default.
 
 Parakeet v2 is English-only. For other languages, swap the model for
 `parakeet-tdt-0.6b-v3` or go back to `whisper.cpp` with `large-v3-turbo`.
@@ -42,8 +42,8 @@ Parakeet v2 is English-only. For other languages, swap the model for
 ## Install
 
 ```bash
-git clone <this repo> ~/projects/omarchy-harness
-cd ~/projects/omarchy-harness
+git clone <this repo> ~/projects/omantra
+cd ~/projects/omantra
 ./install.sh
 ```
 
@@ -67,18 +67,18 @@ llama-server --model ~/models/Qwen3-4B-Q4_K_M.gguf --port 8081 \
 
 | Gesture | Mode | Result |
 |---|---|---|
-| double-tap Super | command | transcript goes to the harness, which acts on it |
+| double-tap Super | command | transcript goes to the interpreter, which acts on it |
 | `Super+Alt+D`, or left click | dictate | transcript goes to the clipboard |
 | right click | — | re-copy the last transcript |
 | middle click, `Super+Alt+Shift+D` | — | cancel and discard |
 
 The bar glyph shows the mode: 󰚩 command, 󰑊 recording, 󰔟 transcribing.
 
-`transcribe` also stands alone:
+`omantra-transcribe` also stands alone:
 
 ```bash
-transcribe meeting.m4a           # any format; ffmpeg converts
-transcribe meeting.m4a --json    # word-level timestamps
+omantra-transcribe meeting.m4a           # any format; ffmpeg converts
+omantra-transcribe meeting.m4a --json    # word-level timestamps
 ```
 
 ## How command mode stays safe
@@ -99,11 +99,11 @@ bash after the model returns, so a stray `../` cannot escape `~/projects` even
 if the model emits one.
 
 Every decision is appended to
-`~/.local/state/omarchy-harness/history.jsonl` next to the transcript that
+`~/.local/state/omantra/history.jsonl` next to the transcript that
 produced it — when it mishears you, that shows whether the fault was the ear or
 the interpreter.
 
-Adding an action means a new `case` in `bin/omarchy-harness` and a line in the
+Adding an action means a new `case` in `bin/omantra` and a line in the
 system prompt. Keep them non-destructive; nothing here asks for confirmation.
 
 ## Layout
@@ -111,15 +111,15 @@ system prompt. Keep them non-destructive; nothing here asks for confirmation.
 ```
 manifest.json                 plugin declaration + settings schema
 BarWidget.qml                 the bar widget: two Processes, a state machine
-bin/transcribe                audio file -> text
-bin/dictate-supertap          double-tap detector for the Super key
-bin/omarchy-harness           transcript -> LLM -> action
+bin/omantra-transcribe        audio file -> text
+bin/omantra-supertap          double-tap detector for the Super key
+bin/omantra                   transcript -> LLM -> action
 hypr/bindings.example.lua     keybindings to copy
 install.sh                    runtime, models, symlinks
 ```
 
 `BarWidget.qml` shells out rather than linking anything: `pw-record` writes the
-wav, `transcribe` reads it. Both halves are runnable from a terminal, which is
+wav, `omantra-transcribe` reads it. Both halves are runnable from a terminal, which is
 what makes the thing debuggable.
 
 ## Notes
@@ -127,7 +127,7 @@ what makes the thing debuggable.
 - Editing `BarWidget.qml` usually hot-reloads, but adding or renaming an IPC
   method needs a full `omarchy restart shell` — `rescanPlugins` reloads the code
   while keeping the old IPC surface.
-- The `dictate` IPC target binds to one bar instance, so on multiple monitors
+- The `omantra` IPC target binds to one bar instance, so on multiple monitors
   only one screen's widget animates. Route through `broadcast` if that matters.
 - Recording caps at `maxSeconds` (default 300) and transcribes what it has
   rather than discarding it.

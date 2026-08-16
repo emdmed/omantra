@@ -17,16 +17,16 @@ import qs.Ui
 // same pipeline is reproducible from a terminal.
 BarWidget {
   id: root
-  moduleName: "enrique.dictate"
+  moduleName: "enrique.omantra"
 
-  readonly property string wavPath: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/omarchy-dictate.wav"
+  readonly property string wavPath: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/omantra.wav"
 
   // Scripts ship inside the plugin, so a checkout is self-contained and works
   // wherever it is cloned. A setting still wins, for pointing at one elsewhere.
   readonly property string pluginDir: String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/$/, "")
 
   readonly property string transcribeCommand: setting("transcribeCommand", "") || (pluginDir + "/bin/transcribe")
-  readonly property string harnessCommand: setting("harnessCommand", "") || (pluginDir + "/bin/omarchy-harness")
+  readonly property string interpreterCommand: setting("interpreterCommand", "") || (pluginDir + "/bin/omantra")
   readonly property int threads: setting("threads", 6)
   readonly property int maxSeconds: setting("maxSeconds", 300)
   readonly property bool copyToClipboard: setting("copyToClipboard", true)
@@ -34,7 +34,7 @@ BarWidget {
   readonly property bool notifyOnDone: setting("notify", true)
 
   // "dictate" puts the transcript on the clipboard; "command" hands it to the
-  // harness to act on. Chosen when recording starts and read when it lands, so
+  // interpreter to act on. Chosen when recording starts and read when it lands, so
   // stopping by any route still delivers the way the take was begun.
   property string mode: "dictate"
 
@@ -97,9 +97,9 @@ BarWidget {
     lastText = text
 
     if (commandMode) {
-      // The harness owns its own notifications from here — it knows what it
+      // The interpreter owns its own notifications from here — it knows what it
       // decided to do, which is the useful thing to report, not the words.
-      Quickshell.execDetached({ command: [harnessCommand, text] })
+      Quickshell.execDetached({ command: [interpreterCommand, text] })
       if (notifyOnDone) notify("Heard", text)
       return
     }
@@ -117,7 +117,7 @@ BarWidget {
 
   function notify(title, body) {
     Quickshell.execDetached({
-      command: ["notify-send", "--app-name=Dictate", "--icon=audio-input-microphone", title, body]
+      command: ["notify-send", "--app-name=Omantra", "--icon=audio-input-microphone", title, body]
     })
   }
 
@@ -155,7 +155,7 @@ BarWidget {
 
   Process {
     id: transcribeProc
-    command: ["env", "TRANSCRIBE_THREADS=" + root.threads, root.transcribeCommand, root.wavPath]
+    command: ["env", "OMANTRA_THREADS=" + root.threads, root.transcribeCommand, root.wavPath]
     stdout: StdioCollector { waitForEnd: true }
     stderr: StdioCollector { waitForEnd: true }
 
@@ -182,7 +182,7 @@ BarWidget {
   // Lets a Hyprland keybind drive the same toggle as the click, so dictation
   // works without aiming at the bar.
   IpcHandler {
-    target: "dictate"
+    target: "omantra"
 
     function toggle(): void { root.toggle("dictate") }
     function toggleCommand(): void { root.toggle("command") }

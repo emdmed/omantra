@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Turn a spoken instruction into one desktop action, using the local LLM.
 #
-#   omarchy-harness "I want to create a new project to create a todo app"
+#   omantra "I want to create a new project to create a todo app"
 #     -> ~/projects/todo-app, git initialised, claude opened with a brief
 #
 # The model's only job is classification and slot-filling: it picks one action
@@ -10,9 +10,9 @@
 # entirely non-destructive — it cannot invent one.
 set -euo pipefail
 
-ENDPOINT="${HARNESS_ENDPOINT:-http://127.0.0.1:8081/v1/chat/completions}"
-PROJECTS="${HARNESS_PROJECTS:-$HOME/projects}"
-LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-harness"
+ENDPOINT="${OMANTRA_ENDPOINT:-http://127.0.0.1:8081/v1/chat/completions}"
+PROJECTS="${OMANTRA_PROJECTS:-$HOME/projects}"
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omantra"
 LOG="$LOG_DIR/history.jsonl"
 
 dry_run=0
@@ -26,17 +26,17 @@ transcript="$*"
 transcript="$(printf '%s' "$transcript" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
 
 if [ -z "$transcript" ]; then
-  echo "omarchy-harness: nothing to interpret" >&2
+  echo "omantra: nothing to interpret" >&2
   exit 1
 fi
 
 mkdir -p "$LOG_DIR"
 
-notify() { notify-send --app-name=Harness --icon=utilities-terminal "$1" "${2:-}"; }
+notify() { notify-send --app-name=Omantra --icon=utilities-terminal "$1" "${2:-}"; }
 
 die() {
-  notify "Harness failed" "$1"
-  echo "omarchy-harness: $1" >&2
+  notify "Omantra failed" "$1"
+  echo "omantra: $1" >&2
   exit 1
 }
 
