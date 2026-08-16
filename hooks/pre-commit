@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Run `make check` before a commit lands. Installed by `make hooks`, which
+# symlinks this file into .git/hooks — the same single-source-of-truth trick
+# install.sh uses for the plugin, so editing it here is enough.
+#
+# CI runs the same target, so this only moves the failure earlier. Skip it with
+# `git commit --no-verify` when that is genuinely what you want.
+#
+# It checks the working tree, not the index, so a partial `git add` can commit
+# something the hook never saw. Stashing the unstaged half to close that gap
+# costs more in lost work when it goes wrong than it saves — CI is the backstop
+# that sees the committed content.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+if ! make check; then
+  echo
+  echo "pre-commit: make check failed — commit aborted." >&2
+  echo "            fix it, or re-run with --no-verify to commit anyway." >&2
+  exit 1
+fi

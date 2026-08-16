@@ -1,6 +1,7 @@
-.PHONY: check test lint install
+.PHONY: check test lint hooks install
 
-# The whole gate. Run before committing.
+# The whole gate. Run before committing — `make hooks` makes that automatic,
+# and .github/workflows/check.yml runs the same target on every push.
 check: lint test
 
 test:
@@ -13,10 +14,16 @@ test:
 lint:
 	@if command -v shellcheck >/dev/null; then \
 	  shellcheck -x bin/omantra bin/omantra-transcribe bin/omantra-supertap \
-	    install.sh lib/*.sh test/*.sh && echo "shellcheck: clean"; \
+	    install.sh lib/*.sh test/*.sh hooks/pre-commit && echo "shellcheck: clean"; \
 	else \
 	  echo "shellcheck not installed — skipping (omarchy pkg add shellcheck)"; \
 	fi
+
+# Symlinked rather than copied, so the hook in the checkout stays the one that
+# runs. Not automatic on clone — git will not install hooks for you.
+hooks:
+	@ln -sfn ../../hooks/pre-commit .git/hooks/pre-commit
+	@echo "installed .git/hooks/pre-commit -> hooks/pre-commit"
 
 install:
 	@./install.sh

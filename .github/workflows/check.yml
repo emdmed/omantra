@@ -1,0 +1,39 @@
+name: check
+
+# The suite exists to catch defaults drifting apart between lib/config.sh,
+# manifest.json and BarWidget.qml — three files that cannot import from each
+# other. That only works if it runs without being remembered, which is what
+# this file is for.
+#
+# It needs no model, no desktop and no network: everything under test is pure
+# string handling, so a stock runner is enough and the whole thing takes
+# seconds.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # jq and shellcheck ship on the GitHub runner image; installing only what
+      # is missing keeps this working if that ever stops being true.
+      - name: Install dependencies
+        run: |
+          missing=()
+          for cmd in jq shellcheck; do
+            command -v "$cmd" >/dev/null || missing+=("$cmd")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends "${missing[@]}"
+          fi
+          shellcheck --version | head -2
+
+      - name: make check
+        run: make check

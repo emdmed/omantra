@@ -168,6 +168,7 @@ for the bash side; `manifest.json` is the source for the widget; and
 ```bash
 make check     # lint + test
 make test      # just the tests
+make hooks     # run `make check` before every commit
 ```
 
 The suite covers the parts worth being sure about: the slug sanitiser that
@@ -175,6 +176,11 @@ keeps a hallucinated `../` inside `~/projects`, the project matcher, and the
 agreement between the three copies of each default. It needs no model, no
 desktop and no network, so it runs anywhere in well under a second.
 `make lint` runs `shellcheck` when it is installed and says so when it isn't.
+
+The same `make check` runs in GitHub Actions on every push, and `make hooks`
+symlinks it in as a pre-commit hook so a failure arrives before the commit
+rather than after the push. Git does not install hooks on clone, so that one is
+a deliberate opt-in per checkout; `git commit --no-verify` skips it.
 
 Environment overrides, all read through `lib/config.sh`: `OMANTRA_THREADS`,
 `OMANTRA_MODEL`, `OMANTRA_SHERPA_BIN`, `OMANTRA_ENDPOINT`, `OMANTRA_PROJECTS`,
