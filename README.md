@@ -1,17 +1,19 @@
 # omantra
 
 Speak to your desktop. Everything runs locally — no audio, no text, and no
-instruction leaves the machine.
+instruction leaves the machine, as long as the model server you point it at is
+on it. The endpoint is a setting, and nothing stops you aiming it at a box down
+the hall; the default is `127.0.0.1`.
 
 ```
 double-tap Super  →  pw-record  →  Parakeet  →  local LLM  →  action
 ```
 
 Say *"I want to create a new project to create a todo app"* and you get
-`~/projects/todo-app`, git-initialised, with Claude open on a brief written
-from what you said.
+`~/projects/todo-app`, git-initialised, with your coding agent — Claude unless
+you change it — open on a brief written from what you said.
 
-It is an [Omarchy](https://omarchy.org/) shell plugin: a mic widget in the bar,
+It is an [Omarchy](https://omarchy.org/) shell plugin: a widget in the bar,
 plus the scripts behind it.
 
 ## Why not Whisper
@@ -49,9 +51,11 @@ cd ~/projects/omantra
 
 The installer pulls ~1 GB of runtime and models into `~/opt` and `~/models/asr`,
 symlinks `bin/` into `~/.local/bin`, and symlinks the checkout itself into
-`~/.config/omarchy/plugins/`. The symlink means the repo stays the single
-source of truth — the shell loads the working copy, with no install step
-between editing a file and running it.
+`~/.config/omarchy/plugins/`. Both symlinks point back here, so there is no
+second copy to keep in sync: `omantra` on your PATH *is* `bin/omantra`, and an
+edit to it is what the next take runs. The QML is the exception — the shell
+loads this checkout but loads it once, so widget and panel edits need
+`omarchy restart shell` (see Notes).
 
 Then add the keybindings from `hypr/bindings.example.lua` to
 `~/.config/hypr/bindings.lua`, and pick both halves up:
@@ -86,14 +90,15 @@ llama-server --model ~/models/Qwen3-4B-Q4_K_M.gguf --port 8081 \
 |---|---|---|
 | double-tap Super | command | transcript goes to the interpreter, which acts on it |
 | `Super+Alt+D`, or left click | dictate | transcript goes to the clipboard |
-| right click, `Super+Alt+C` | — | open the settings panel |
+| right click while idle, `Super+Alt+C` | — | open the settings panel |
 | middle click while idle | — | re-copy the last transcript |
 | middle click while recording, `Super+Alt+Shift+D`, Esc | — | cancel and discard |
 
 The bar glyph shows the mode: 󰗋 idle, 󰚩 command, 󰑊 recording, 󰔟 transcribing.
-Idle is a head with sound coming out of it rather than a microphone, because
-Omarchy's own mic widget is a microphone — down to the same glyph — and this
-one is about speaking to the machine, not about the input device.
+Idle is a head with sound coming out of it rather than a microphone: that
+glyph belongs to Omarchy's own mic widget, which this one used to duplicate
+exactly, and Omantra is about speaking to the machine rather than about the
+input device.
 
 While a take is running, a card lands in the middle of the screen over a dimmed
 desktop — the Omarchy mark, a level meter, the mode, and the clock — and stays
@@ -123,7 +128,8 @@ with the `overlay` setting.
 
 ```bash
 omantra-transcribe meeting.m4a           # any format; ffmpeg converts
-omantra-transcribe meeting.m4a --json    # word-level timestamps
+omantra-transcribe meeting.m4a --json    # sherpa's full result, with per-token
+                                         # timestamps
 ```
 
 ## Settings
@@ -176,8 +182,8 @@ return one of a fixed set of actions:
 
 | action | fields | effect |
 |---|---|---|
-| `new_project` | `name`, `prompt` | mkdir under `~/projects`, `git init`, open Claude with the brief |
-| `open_project` | `name`, `prompt` | fuzzy-match an existing project, open Claude there |
+| `new_project` | `name`, `prompt` | mkdir under `~/projects`, `git init`, open the agent with the brief |
+| `open_project` | `name`, `prompt` | fuzzy-match an existing project, open the agent there |
 | `unknown` | — | copy the words to the clipboard and say so |
 
 A misheard sentence can at worst pick the wrong action from a set that is
@@ -205,7 +211,7 @@ here asks for confirmation.
 
 ```
 manifest.json                 plugin declaration + settings schema
-BarWidget.qml                 the bar widget: two Processes, one state machine
+BarWidget.qml                 the bar widget: four Processes, one state machine
 VoiceOverlay.qml              the centered "speak now" card
 ConfigPanel.qml               the settings card — a front-end for omantra-config
 lib/config.sh                 paths, versions and defaults — sourced by everything
@@ -223,10 +229,10 @@ install.sh                    runtime, models, symlinks
 wav, `omantra-transcribe` reads it. Both halves are runnable from a terminal, which is
 what makes the thing debuggable.
 
-Three things need a value that bash, QML and JSON all have to agree on, and
-none of them can import from the others. `lib/config.sh` is the source of truth
-for the bash side; `manifest.json` is the source for the widget; and
-`test/test_config.sh` fails the build if they drift apart.
+Every widget-facing default is written down three times — in `lib/config.sh`
+for the bash side, in `manifest.json` for the widget, and as the fallback
+literal in `BarWidget.qml` — because none of the three languages can import
+from the others. `test/test_config.sh` fails the build when they drift apart.
 
 The settable ones are a table at the top of `lib/config.sh` — variable, type,
 matching manifest key, label. The file parser, the validator, the JSON the
@@ -258,8 +264,9 @@ allowed to set at all, and that a value is never executed.
 
 Environment overrides, all read through `lib/config.sh`: `OMANTRA_THREADS`,
 `OMANTRA_MODEL`, `OMANTRA_SHERPA_BIN`, `OMANTRA_ENDPOINT`, `OMANTRA_PROJECTS`,
-`OMANTRA_AGENT` (defaults to `claude`), `OMANTRA_TAP_WINDOW_MS`,
-`OMANTRA_LOG`, `OMANTRA_LOG_MAX_LINES`, `OMANTRA_CONFIG_FILE`. The ones the
+`OMANTRA_AGENT` (defaults to `claude`), `OMANTRA_MAX_SECONDS`,
+`OMANTRA_TAP_WINDOW_MS`, `OMANTRA_LOG`, `OMANTRA_LOG_MAX_LINES`,
+`OMANTRA_CONFIG_FILE`. The ones the
 panel writes are also settable with `omantra-config set`; see
 `omantra-config keys` for the list.
 
@@ -277,5 +284,6 @@ panel writes are also settable with `omantra-config set`; see
 
 ## Requirements
 
-Omarchy 4 (Quickshell shell), PipeWire, and `ffmpeg jq curl wl-clipboard
-libnotify xdg-terminal-exec`. Optional: `wtype` for the `typeOut` setting.
+Omarchy 4 (Quickshell shell), PipeWire, and `git ffmpeg jq curl wl-clipboard
+libnotify xdg-terminal-exec` — `git` because `new_project` initialises a repo.
+Optional: `wtype` for the `typeOut` setting.
