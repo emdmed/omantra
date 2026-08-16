@@ -6,8 +6,10 @@
 # if the previous one was recent enough, fires the toggle.
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+. "$ROOT/lib/config.sh"
+
 STATE="${XDG_RUNTIME_DIR:-/tmp}/omantra-supertap"
-WINDOW_MS="${OMANTRA_TAP_WINDOW_MS:-400}"
 
 now=$(( $(date +%s%N) / 1000000 ))
 last=0
@@ -15,7 +17,7 @@ last=0
 
 delta=$(( now - last ))
 
-if [ "$last" -gt 0 ] && [ "$delta" -le "$WINDOW_MS" ]; then
+if [ "$last" -gt 0 ] && [ "$delta" -le "$OMANTRA_TAP_WINDOW_MS" ]; then
   # Clear rather than record, so a third tap starts a fresh pair instead of
   # toggling again off the back of the second.
   echo 0 > "$STATE"

@@ -4,16 +4,14 @@
 # satisfied.
 set -euo pipefail
 
-SHERPA_VERSION="${SHERPA_VERSION:-1.13.5}"
-MODEL_NAME="sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
-RELEASES="https://github.com/k2-fsa/sherpa-onnx/releases/download"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Versions and paths come from the same file the runtime scripts read, so a
+# version bump can't leave the installer and the transcriber disagreeing.
+. "$REPO/lib/config.sh"
 
-OPT="$HOME/opt"
-MODELS="$HOME/models/asr"
 LOCAL_BIN="$HOME/.local/bin"
 PLUGIN_ID="enrique.omantra"
 PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
@@ -31,37 +29,37 @@ fi
 
 # ---- sherpa-onnx runtime ----------------------------------------------------
 
-SHERPA_DIR="$OPT/sherpa-onnx-v$SHERPA_VERSION-linux-x64-static"
-if [ -x "$SHERPA_DIR/bin/sherpa-onnx-offline" ]; then
-  say "sherpa-onnx $SHERPA_VERSION already installed"
+if [ -x "$OMANTRA_SHERPA_BIN/sherpa-onnx-offline" ]; then
+  say "sherpa-onnx $OMANTRA_SHERPA_VERSION already installed"
 else
-  say "Installing sherpa-onnx $SHERPA_VERSION (~400 MB download)"
-  mkdir -p "$OPT"
+  say "Installing sherpa-onnx $OMANTRA_SHERPA_VERSION (~400 MB download)"
+  mkdir -p "$OMANTRA_OPT_DIR"
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
   curl -fL --progress-bar \
     -o "$tmp/sherpa.tar.bz2" \
-    "$RELEASES/v$SHERPA_VERSION/sherpa-onnx-v$SHERPA_VERSION-linux-x64-static.tar.bz2"
-  tar xf "$tmp/sherpa.tar.bz2" -C "$OPT"
+    "$OMANTRA_RELEASES/v$OMANTRA_SHERPA_VERSION/sherpa-onnx-v$OMANTRA_SHERPA_VERSION-linux-x64-static.tar.bz2"
+  tar xf "$tmp/sherpa.tar.bz2" -C "$OMANTRA_OPT_DIR"
 fi
 
 # ---- Parakeet model ---------------------------------------------------------
 
-if [ -f "$MODELS/$MODEL_NAME/encoder.int8.onnx" ]; then
+if [ -f "$OMANTRA_MODEL/encoder.int8.onnx" ]; then
   say "Parakeet model already installed"
 else
-  say "Installing $MODEL_NAME (~660 MB)"
-  mkdir -p "$MODELS"
+  say "Installing $OMANTRA_MODEL_NAME (~660 MB)"
+  mkdir -p "$OMANTRA_MODELS_DIR"
   curl -fL --progress-bar \
-    -o "$MODELS/model.tar.bz2" \
-    "$RELEASES/asr-models/$MODEL_NAME.tar.bz2"
-  tar xf "$MODELS/model.tar.bz2" -C "$MODELS"
-  rm -f "$MODELS/model.tar.bz2"
+    -o "$OMANTRA_MODELS_DIR/model.tar.bz2" \
+    "$OMANTRA_RELEASES/asr-models/$OMANTRA_MODEL_NAME.tar.bz2"
+  tar xf "$OMANTRA_MODELS_DIR/model.tar.bz2" -C "$OMANTRA_MODELS_DIR"
+  rm -f "$OMANTRA_MODELS_DIR/model.tar.bz2"
 fi
 
-if [ ! -f "$MODELS/silero_vad.onnx" ]; then
+if [ ! -f "$OMANTRA_MODELS_DIR/silero_vad.onnx" ]; then
   say "Installing Silero VAD"
-  curl -fL --progress-bar -o "$MODELS/silero_vad.onnx" "$RELEASES/asr-models/silero_vad.onnx"
+  curl -fL --progress-bar -o "$OMANTRA_MODELS_DIR/silero_vad.onnx" \
+    "$OMANTRA_RELEASES/asr-models/silero_vad.onnx"
 fi
 
 # ---- CLI entry points -------------------------------------------------------
@@ -97,7 +95,7 @@ Add the keybindings from hypr/bindings.example.lua to ~/.config/hypr/bindings.lu
 then run:  hyprctl reload && omarchy restart shell
 
 Verify with:
-  omantra-transcribe "$MODELS/$MODEL_NAME/test_wavs/0.wav"
+  omantra-transcribe "$OMANTRA_MODEL/test_wavs/0.wav"
   omantra --dry-run "create a new project for a todo app"
   omarchy-shell omantra status
 EOF

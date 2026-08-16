@@ -125,20 +125,31 @@ if the model emits one.
 Every decision is appended to
 `~/.local/state/omantra/history.jsonl` next to the transcript that
 produced it — when it mishears you, that shows whether the fault was the ear or
-the interpreter.
+the interpreter. One JSON object per line, trimmed to the most recent
+`OMANTRA_LOG_MAX_LINES` (2000) entries:
 
-Adding an action means a new `case` in `bin/omantra` and a line in the
-system prompt. Keep them non-destructive; nothing here asks for confirmation.
+```bash
+jq -r 'select(.action == "unknown") | .transcript' ~/.local/state/omantra/history.jsonl
+```
+
+Adding an action means one row in the `ACTIONS` table at the top of
+`bin/omantra` and a matching `do_<name>` function. The JSON schema enum, the
+system prompt and the dispatch are all generated from that table, so there is
+no second and third place to keep in step. Keep them non-destructive; nothing
+here asks for confirmation.
 
 ## Layout
 
 ```
 manifest.json                 plugin declaration + settings schema
-BarWidget.qml                 the bar widget: two Processes, a state machine
+BarWidget.qml                 the bar widget: two Processes, one state machine
 VoiceOverlay.qml              the centered "speak now" card
+lib/config.sh                 paths, versions and defaults — sourced by everything
+lib/project.sh                slugify + find_project, the pure half of dispatch
 bin/omantra-transcribe        audio file -> text
 bin/omantra-supertap          double-tap detector for the Super key
 bin/omantra                   transcript -> LLM -> action
+test/                         `make test` — no model, desktop or network needed
 hypr/bindings.example.lua     keybindings to copy
 install.sh                    runtime, models, symlinks
 ```
@@ -146,6 +157,29 @@ install.sh                    runtime, models, symlinks
 `BarWidget.qml` shells out rather than linking anything: `pw-record` writes the
 wav, `omantra-transcribe` reads it. Both halves are runnable from a terminal, which is
 what makes the thing debuggable.
+
+Three things need a value that bash, QML and JSON all have to agree on, and
+none of them can import from the others. `lib/config.sh` is the source of truth
+for the bash side; `manifest.json` is the source for the widget; and
+`test/test_config.sh` fails the build if they drift apart.
+
+## Developing
+
+```bash
+make check     # lint + test
+make test      # just the tests
+```
+
+The suite covers the parts worth being sure about: the slug sanitiser that
+keeps a hallucinated `../` inside `~/projects`, the project matcher, and the
+agreement between the three copies of each default. It needs no model, no
+desktop and no network, so it runs anywhere in well under a second.
+`make lint` runs `shellcheck` when it is installed and says so when it isn't.
+
+Environment overrides, all read through `lib/config.sh`: `OMANTRA_THREADS`,
+`OMANTRA_MODEL`, `OMANTRA_SHERPA_BIN`, `OMANTRA_ENDPOINT`, `OMANTRA_PROJECTS`,
+`OMANTRA_AGENT` (defaults to `claude`), `OMANTRA_TAP_WINDOW_MS`,
+`OMANTRA_LOG`, `OMANTRA_LOG_MAX_LINES`.
 
 ## Notes
 

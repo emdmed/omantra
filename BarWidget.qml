@@ -39,11 +39,28 @@ BarWidget {
   // stopping by any route still delivers the way the take was begun.
   property string mode: "dictate"
 
-  property bool recording: false
-  property bool working: false
-  // Set before the SIGTERM that stops a discarded take, so onExited can tell
-  // "user cancelled" from "user finished" — the exit code is the same.
-  property bool discarding: false
+  // The widget is one state machine, and this is it. Every other question —
+  // what the glyph is, whether the overlay is up, what a click does — is
+  // derived from this property, so there is no way to be recording and
+  // transcribing at once, and no pair of flags that can disagree.
+  //
+  //   idle → recording → working → done | error → idle
+  //            ↓
+  //        cancelling → idle
+  //
+  // "cancelling" is the beat between the SIGTERM of a discarded take and
+  // pw-record actually exiting; it is what lets recProc.onExited tell "user
+  // cancelled" from "user finished", which the exit code cannot.
+  //
+  // "working" starting the moment recording stops — rather than when the
+  // recorder exits — also closes a gap where neither flag was set and the
+  // overlay blinked out and back in between the two.
+  property string phase: "idle"
+
+  readonly property bool recording: phase === "recording"
+  readonly property bool working: phase === "working"
+  readonly property bool busy: recording || working
+
   property int elapsed: 0
   property real level: 0
   // Starts at the ceiling so the first readings of a take pull it straight down
@@ -52,19 +69,13 @@ BarWidget {
   property string lastText: ""
   property string lastError: ""
 
-  // The overlay outlives the run by a beat to show what landed: "done" or
-  // "error" until flashTimer clears it. Empty means the overlay is down.
-  property string flashPhase: ""
-
-  readonly property string overlayPhase: {
-    if (!overlayEnabled) return ""
-    if (recording) return "recording"
-    if (working) return "working"
-    return flashPhase
-  }
+  // The overlay understands exactly the phases the machine has, minus the two
+  // that mean "nothing to show".
+  readonly property string overlayPhase:
+    (!overlayEnabled || phase === "idle" || phase === "cancelling") ? "" : phase
 
   readonly property bool commandMode: mode === "command"
-  readonly property string glyph: recording || working ? (commandMode ? "󰚩" : (recording ? "󰑊" : "󰔟")) : "󰍬"
+  readonly property string glyph: busy ? (commandMode ? "󰚩" : (recording ? "󰑊" : "󰔟")) : "󰍬"
 
   readonly property string elapsedLabel: {
     var m = Math.floor(elapsed / 60)
@@ -81,13 +92,14 @@ BarWidget {
   }
 
   function start(requestedMode) {
-    if (recording || working) return
+    // Only idle takes a new take: "done"/"error" are still showing the last
+    // result, and starting from there would be a take begun over a stale card.
+    if (phase !== "idle" && phase !== "done" && phase !== "error") return
     mode = requestedMode === "command" ? "command" : "dictate"
     lastError = ""
     elapsed = 0
-    discarding = false
-    flash("")
-    recording = true
+    flashTimer.stop()
+    phase = "recording"
     recProc.running = true
   }
 
@@ -119,37 +131,35 @@ BarWidget {
     level = next > level ? next : level * 0.65 + next * 0.35
   }
 
-  // Hold the overlay on the result for a moment, or take it down at once when
-  // given an empty phase.
-  function flash(phase) {
-    flashPhase = phase
-    if (phase === "") flashTimer.stop()
-    else flashTimer.restart()
+  // Hold the overlay on a result for a moment before returning to idle.
+  function settle(resultPhase) {
+    phase = resultPhase
+    flashTimer.restart()
   }
 
   // pw-record finalizes the wav header on SIGTERM, so dropping `running`
   // leaves a complete file behind and the transcribe step runs from onExited.
   function stop() {
     if (!recording) return
-    recording = false
+    phase = "working"
     recProc.running = false
   }
 
   function cancel() {
     if (!recording) return
-    discarding = true
-    stop()
-    flash("")
+    phase = "cancelling"
+    recProc.running = false
+    flashTimer.stop()
   }
 
   function toggle(requestedMode) {
     if (recording) stop()
-    else if (!working) start(requestedMode)
+    else start(requestedMode)
   }
 
   function deliver(text) {
     lastText = text
-    flash("done")
+    settle("done")
 
     if (commandMode) {
       // The interpreter owns its own notifications from here — it knows what it
@@ -191,10 +201,12 @@ BarWidget {
     }
   }
 
+  // The one timer that returns the machine to idle: a result stays up long
+  // enough to read, and an error stays up longer because it has more to say.
   Timer {
     id: flashTimer
-    interval: root.flashPhase === "error" ? 3200 : 1800
-    onTriggered: root.flashPhase = ""
+    interval: root.phase === "error" ? 3200 : 1800
+    onTriggered: root.phase = "idle"
   }
 
   // The gesture that starts a take has no visible target, so the feedback that
@@ -254,13 +266,12 @@ BarWidget {
     stderr: StdioCollector { waitForEnd: true }
 
     onExited: function(exitCode) {
-      if (root.discarding) {
-        root.discarding = false
+      if (root.phase === "cancelling") {
+        root.phase = "idle"
         return
       }
       // pw-record exits non-zero on SIGTERM on some setups even though the
       // file is good, so the wav itself is the source of truth, not the code.
-      root.working = true
       transcribeProc.running = true
     }
   }
@@ -272,12 +283,11 @@ BarWidget {
     stderr: StdioCollector { waitForEnd: true }
 
     onExited: function(exitCode) {
-      root.working = false
       var text = String(transcribeProc.stdout.text || "").trim()
 
       if (exitCode !== 0) {
         root.lastError = String(transcribeProc.stderr.text || "").trim() || ("exit " + exitCode)
-        root.flash("error")
+        root.settle("error")
         if (root.notifyOnDone) root.notify("Transcription failed", root.lastError)
         return
       }
@@ -285,7 +295,7 @@ BarWidget {
       root.lastError = ""
       if (text === "") {
         root.lastError = "No speech detected"
-        root.flash("error")
+        root.settle("error")
         if (root.notifyOnDone) root.notify("Nothing to transcribe", "No speech detected")
         return
       }
@@ -304,7 +314,9 @@ BarWidget {
     function start(): void { root.start("dictate") }
     function stop(): void { root.stop() }
     function cancel(): void { root.cancel() }
-    function status(): string { return root.recording ? "recording" : (root.working ? "working" : "idle") }
+    // The machine's own state, rather than a re-derived summary of it: a script
+    // asking "what is it doing" gets "done" and "error" too, not just "idle".
+    function status(): string { return root.phase }
     function mode(): string { return root.mode }
     function last(): string { return root.lastText }
   }

@@ -2,7 +2,7 @@
 # Turn a spoken instruction into one desktop action, using the local LLM.
 #
 #   omantra "I want to create a new project to create a todo app"
-#     -> ~/projects/todo-app, git initialised, claude opened with a brief
+#     -> ~/projects/todo-app, git initialised, agent opened with a brief
 #
 # The model's only job is classification and slot-filling: it picks one action
 # from a fixed list and fills typed fields. It never emits a command, so a
@@ -10,10 +10,34 @@
 # entirely non-destructive — it cannot invent one.
 set -euo pipefail
 
-ENDPOINT="${OMANTRA_ENDPOINT:-http://127.0.0.1:8081/v1/chat/completions}"
-PROJECTS="${OMANTRA_PROJECTS:-$HOME/projects}"
-LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omantra"
-LOG="$LOG_DIR/history.jsonl"
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+. "$ROOT/lib/config.sh"
+. "$ROOT/lib/project.sh"
+
+# ---- Actions ----------------------------------------------------------------
+#
+# One row per action: the name the model may return, and the sentence that
+# teaches it when to pick that name. The JSON schema enum, the system prompt and
+# the dispatch are all generated from this table, so adding an action is a row
+# here plus a matching `do_<name>` function below — never three edits that have
+# to agree.
+#
+# Keep them non-destructive; nothing here asks for confirmation.
+ACTIONS=(
+  "new_project|the user wants to start something that does not exist yet."
+  "open_project|the user names an existing project to resume work on."
+  "unknown|the instruction fits neither, or is too vague to act on."
+)
+
+action_names() { printf '%s\n' "${ACTIONS[@]%%|*}"; }
+action_help() {
+  local row
+  for row in "${ACTIONS[@]}"; do
+    printf -- '- %s: %s\n' "${row%%|*}" "${row#*|}"
+  done
+}
+
+# ---- Input ------------------------------------------------------------------
 
 dry_run=0
 if [ "${1:-}" = "--dry-run" ]; then
@@ -30,9 +54,18 @@ if [ -z "$transcript" ]; then
   exit 1
 fi
 
-mkdir -p "$LOG_DIR"
+# Every side effect goes through run(), so exactly one place knows about
+# --dry-run. open_agent() below is the one exception, because backgrounding a
+# detached terminal does not survive being passed through a wrapper.
+run() {
+  if [ "$dry_run" = 1 ]; then
+    printf 'would: %s\n' "$*"
+    return 0
+  fi
+  "$@"
+}
 
-notify() { notify-send --app-name=Omantra --icon=utilities-terminal "$1" "${2:-}"; }
+notify() { run notify-send --app-name=Omantra --icon=utilities-terminal "$1" "${2:-}"; }
 
 die() {
   notify "Omantra failed" "$1"
@@ -42,13 +75,11 @@ die() {
 
 # ---- Slot filling -----------------------------------------------------------
 
-read -r -d '' SYSTEM <<'EOF' || true
+SYSTEM="$(cat <<EOF
 You convert a spoken instruction into exactly one desktop action.
 
 Actions:
-- new_project: the user wants to start something that does not exist yet.
-- open_project: the user names an existing project to resume work on.
-- unknown: the instruction fits neither, or is too vague to act on.
+$(action_help)
 
 Fields:
 - name: short kebab-case slug for the project, derived from the subject of the
@@ -60,10 +91,12 @@ Fields:
 
 Reply with JSON only.
 EOF
+)"
 
 request="$(jq -n \
   --arg system "$SYSTEM" \
   --arg user "$transcript" \
+  --argjson actions "$(action_names | jq -R . | jq -s .)" \
   '{
     model: "local",
     temperature: 0.1,
@@ -80,7 +113,7 @@ request="$(jq -n \
         schema: {
           type: "object",
           properties: {
-            action: { type: "string", enum: ["new_project","open_project","unknown"] },
+            action: { type: "string", enum: $actions },
             name:   { type: "string" },
             prompt: { type: "string" }
           },
@@ -91,9 +124,9 @@ request="$(jq -n \
     }
   }')"
 
-response="$(curl -sS --max-time 120 "$ENDPOINT" \
+response="$(curl -sS --max-time 120 "$OMANTRA_ENDPOINT" \
   -H 'Content-Type: application/json' \
-  -d "$request")" || die "could not reach the model at $ENDPOINT"
+  -d "$request")" || die "could not reach the model at $OMANTRA_ENDPOINT"
 
 content="$(printf '%s' "$response" | jq -r '.choices[0].message.content // empty')"
 [ -z "$content" ] && die "model returned no content"
@@ -103,74 +136,75 @@ name="$(printf '%s' "$content" | jq -r '.name // ""')"
 prompt="$(printf '%s' "$content" | jq -r '.prompt // ""')"
 
 # The schema constrains the shape, not the contents: re-slug here so a stray
-# slash or leading dot from the model can never escape $PROJECTS.
-slug="$(printf '%s' "$name" \
-  | tr '[:upper:]' '[:lower:]' \
-  | sed 's/[^a-z0-9]\+/-/g; s/^-\+//; s/-\+$//' \
-  | cut -c1-50)"
+# slash or leading dot from the model can never escape $OMANTRA_PROJECTS.
+slug="$(slugify "$name")"
 
-jq -n --arg t "$transcript" --arg a "$action" --arg s "$slug" --arg p "$prompt" \
-  '{transcript:$t, action:$a, slug:$s, prompt:$p}' >> "$LOG"
+mkdir -p "$(dirname "$OMANTRA_LOG")"
+# -c matters: the file is .jsonl, and jq pretty-prints by default, so every
+# entry was landing as five lines that no line-oriented reader could parse.
+jq -nc --arg t "$transcript" --arg a "$action" --arg s "$slug" --arg p "$prompt" \
+  '{transcript:$t, action:$a, slug:$s, prompt:$p}' >> "$OMANTRA_LOG"
+if [ "$(wc -l < "$OMANTRA_LOG")" -gt "$OMANTRA_LOG_MAX_LINES" ]; then
+  tail -n "$OMANTRA_LOG_MAX_LINES" "$OMANTRA_LOG" > "$OMANTRA_LOG.tmp"
+  mv "$OMANTRA_LOG.tmp" "$OMANTRA_LOG"
+fi
 
 # ---- Dispatch ---------------------------------------------------------------
 
-# Runs claude through a login shell so it picks up mise shims from the profile,
-# and drops to a shell afterwards rather than closing the window on exit.
-open_claude() {
+# Runs the agent through a login shell so it picks up mise shims from the
+# profile, and drops to a shell afterwards rather than closing the window on
+# exit.
+open_agent() {
   local dir="$1" initial="$2" title="$3"
-  if [ "$dry_run" = "1" ]; then
-    echo "would open terminal in $dir with prompt: $initial"
+  if [ "$dry_run" = 1 ]; then
+    printf 'would: open %s in %s with prompt: %s\n' "$OMANTRA_AGENT" "$dir" "$initial"
     return
   fi
+  # shellcheck disable=SC2016  # the single quotes are the point: $1/$2/$3 are
+  # the *inner* shell's positional parameters, passed after the `_` below.
+  # Interpolating here would put a spoken transcript into a shell command line.
   setsid xdg-terminal-exec --title="$title" -- \
-    bash -lc 'cd "$1" && claude "$2"; exec bash -l' _ "$dir" "$initial" &
+    bash -lc 'cd "$1" && "$2" "$3"; exec bash -l' _ "$dir" "$OMANTRA_AGENT" "$initial" &
 }
 
-find_project() {
-  local want="$1"
-  [ -d "$PROJECTS/$want" ] && { printf '%s' "$want"; return 0; }
-  local match
-  match="$(ls -1 "$PROJECTS" 2>/dev/null | grep -ixF "$want" | head -1)"
-  [ -z "$match" ] && match="$(ls -1 "$PROJECTS" 2>/dev/null | grep -i -- "$want" | head -1)"
-  [ -z "$match" ] && return 1
-  printf '%s' "$match"
-}
-
-case "$action" in
-new_project)
+do_new_project() {
   [ -z "$slug" ] && die "could not name a project from: $transcript"
-  dir="$PROJECTS/$slug"
+  local dir="$OMANTRA_PROJECTS/$slug"
 
   if [ -d "$dir" ]; then
     notify "Project already exists" "Opening $slug"
-  elif [ "$dry_run" = "1" ]; then
-    echo "would create $dir"
   else
-    mkdir -p "$dir"
-    git -C "$dir" init -q
+    run mkdir -p "$dir"
+    run git -C "$dir" init -q
     notify "New project: $slug" "$prompt"
   fi
 
-  open_claude "$dir" "$prompt" "claude: $slug"
-  ;;
+  open_agent "$dir" "$prompt" "$OMANTRA_AGENT: $slug"
+}
 
-open_project)
+do_open_project() {
   [ -z "$slug" ] && die "no project named in: $transcript"
+  local match
   if ! match="$(find_project "$slug")"; then
-    notify "No such project" "Nothing in $PROJECTS matches \"$slug\""
+    notify "No such project" "Nothing in $OMANTRA_PROJECTS matches \"$slug\""
     exit 1
   fi
-  [ "$dry_run" = "1" ] && echo "would open $PROJECTS/$match"
   notify "Opening $match" "$prompt"
-  open_claude "$PROJECTS/$match" "$prompt" "claude: $match"
-  ;;
+  open_agent "$OMANTRA_PROJECTS/$match" "$prompt" "$OMANTRA_AGENT: $match"
+}
 
-*)
-  # Not understood is not a failure — hand the words back so the take is not
-  # lost, and let the user decide what to do with them.
-  [ "$dry_run" = "1" ] && echo "unknown action for: $transcript"
-  printf '%s' "$transcript" | wl-copy
+# Not understood is not a failure — hand the words back so the take is not
+# lost, and let the user decide what to do with them.
+do_unknown() {
+  run wl-copy -- "$transcript"
   notify "Not understood" "Copied to clipboard: $transcript"
   exit 0
-  ;;
-esac
+}
+
+# A model that returns something off the table is treated as `unknown` rather
+# than as an error: the words still reach the clipboard.
+if declare -F "do_$action" >/dev/null; then
+  "do_$action"
+else
+  do_unknown
+fi

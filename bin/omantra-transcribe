@@ -3,42 +3,65 @@
 # Usage: omantra-transcribe <audio-file> [--json]
 set -euo pipefail
 
-SHERPA_VERSION="${SHERPA_VERSION:-1.13.5}"
-BIN="${OMANTRA_SHERPA_BIN:-$HOME/opt/sherpa-onnx-v$SHERPA_VERSION-linux-x64-static/bin}"
-MODEL="${OMANTRA_MODEL:-$HOME/models/asr/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8}"
-THREADS="${OMANTRA_THREADS:-6}"
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+. "$ROOT/lib/config.sh"
 
 if [ $# -lt 1 ]; then
   echo "usage: omantra-transcribe <audio-file> [--json]" >&2
   exit 1
 fi
 
-if [ ! -x "$BIN/sherpa-onnx-offline" ]; then
-  echo "omantra-transcribe: sherpa-onnx not found at $BIN — run install.sh" >&2
+if [ ! -x "$OMANTRA_SHERPA_BIN/sherpa-onnx-offline" ]; then
+  echo "omantra-transcribe: sherpa-onnx not found at $OMANTRA_SHERPA_BIN — run install.sh" >&2
   exit 1
 fi
 
-if [ ! -f "$MODEL/encoder.int8.onnx" ]; then
-  echo "omantra-transcribe: model not found at $MODEL — run install.sh" >&2
+if [ ! -f "$OMANTRA_MODEL/encoder.int8.onnx" ]; then
+  echo "omantra-transcribe: model not found at $OMANTRA_MODEL — run install.sh" >&2
   exit 1
 fi
 
 input=$1
 json=${2:-}
 
+if [ ! -f "$input" ]; then
+  echo "omantra-transcribe: no such file: $input" >&2
+  exit 1
+fi
+
 # Parakeet wants 16 kHz mono 16-bit PCM; let ffmpeg handle anything else.
 wav=$(mktemp --suffix=.wav)
-trap 'rm -f "$wav"' EXIT
-ffmpeg -v error -y -i "$input" -ac 1 -ar 16000 -sample_fmt s16 "$wav"
+err=$(mktemp)
+trap 'rm -f "$wav" "$err"' EXIT
 
-out=$("$BIN/sherpa-onnx-offline" \
-  --encoder="$MODEL/encoder.int8.onnx" \
-  --decoder="$MODEL/decoder.int8.onnx" \
-  --joiner="$MODEL/joiner.int8.onnx" \
-  --tokens="$MODEL/tokens.txt" \
+if ! ffmpeg -v error -y -i "$input" -ac 1 -ar 16000 -sample_fmt s16 "$wav" 2>"$err"; then
+  echo "omantra-transcribe: could not decode $input" >&2
+  cat "$err" >&2
+  exit 1
+fi
+
+# sherpa's own diagnostics go to stderr and its result to stdout. Keeping the
+# stderr rather than discarding it is the difference between "the model file is
+# truncated" and an empty failure the widget reports as `exit 1`.
+if ! raw=$("$OMANTRA_SHERPA_BIN/sherpa-onnx-offline" \
+  --encoder="$OMANTRA_MODEL/encoder.int8.onnx" \
+  --decoder="$OMANTRA_MODEL/decoder.int8.onnx" \
+  --joiner="$OMANTRA_MODEL/joiner.int8.onnx" \
+  --tokens="$OMANTRA_MODEL/tokens.txt" \
   --model-type=nemo_transducer \
-  --num-threads="$THREADS" \
-  "$wav" 2>/dev/null | grep -E '^\{')
+  --num-threads="$OMANTRA_THREADS" \
+  "$wav" 2>"$err"); then
+  echo "omantra-transcribe: sherpa-onnx failed" >&2
+  cat "$err" >&2
+  exit 1
+fi
+
+out=$(printf '%s\n' "$raw" | grep -E '^\{' || true)
+if [ -z "$out" ]; then
+  echo "omantra-transcribe: no result in sherpa-onnx output" >&2
+  cat "$err" >&2
+  exit 1
+fi
 
 if [ "$json" = "--json" ]; then
   echo "$out"
