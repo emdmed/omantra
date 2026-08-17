@@ -74,13 +74,13 @@
       {
         "key": "notify",
         "type": "boolean",
-        "label": "Show a notification when done",
+        "label": "Show a notification when something fails",
         "defaultValue": true
       },
       {
         "key": "overlay",
         "type": "boolean",
-        "label": "Show the centered speak-now overlay while recording",
+        "label": "Show the speak-now chip under the bar while recording",
         "defaultValue": true
       }
     ]

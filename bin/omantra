@@ -13,6 +13,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 . "$ROOT/lib/config.sh"
 . "$ROOT/lib/project.sh"
+. "$ROOT/lib/theme.sh"
 
 # ---- Actions ----------------------------------------------------------------
 #
@@ -26,7 +27,8 @@ ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 ACTIONS=(
   "new_project|the user wants to start something that does not exist yet."
   "open_project|the user names an existing project to resume work on."
-  "unknown|the instruction fits neither, or is too vague to act on."
+  "set_theme|the user wants to change how the desktop looks — its theme, its colours, light or dark — or simply names one of the installed themes listed below."
+  "unknown|the instruction fits none of those, or is too vague to act on."
 )
 
 action_names() { printf '%s\n' "${ACTIONS[@]%%|*}"; }
@@ -65,13 +67,27 @@ run() {
   "$@"
 }
 
+# Only failures notify. Everything that went right is already on screen: the
+# chip under the bar is showing it, and a desktop notification for a theme
+# switch you can see happening is a second copy of the news. A failure is the
+# one outcome that has to outlive a chip that flashes for three seconds.
 notify() { run notify-send --app-name=Omantra --icon=utilities-terminal "$1" "${2:-}"; }
 
 die() {
-  notify "Omantra failed" "$1"
+  [ "$OMANTRA_NOTIFY" = true ] && notify "Omantra failed" "$1"
   echo "omantra: $1" >&2
   exit 1
 }
+
+# The one line the widget reads off stdout: what is about to happen, as the
+# state word the chip shows and the subject under it. Printed *before* the side
+# effect, so the chip is naming the decision while the terminal is still
+# opening — the point being that a spoken command is a guess, and the guess
+# should be visible.
+#
+# `|` separates the two, the same way the tables in this file do; no subject
+# below can contain one.
+plan() { printf 'plan: %s|%s\n' "$1" "${2:-}"; }
 
 # ---- Slot filling -----------------------------------------------------------
 
@@ -81,13 +97,22 @@ You convert a spoken instruction into exactly one desktop action.
 Actions:
 $(action_help)
 
+Installed themes:
+$(theme_names | tr '\n' ' ')
+
+An instruction that names one of those is a theme change, whatever verb it
+uses — "go back to nord" is set_theme, not open_project. A name that is not on
+that list is not a theme, however much it sounds like one.
+
 Fields:
-- name: short kebab-case slug for the project, derived from the subject of the
-  request. "a todo app" -> "todo-app". Lowercase letters, digits and hyphens
-  only. Empty string when the action is unknown.
+- name: short kebab-case slug for the subject of the request. Lowercase
+  letters, digits and hyphens only. Empty string when the action is unknown.
+  For the project actions it names the project: "a todo app" -> "todo-app".
+  For set_theme it is the theme, copied from the list above rather than
+  invented — the names there are kebab-case already.
 - prompt: a first instruction to hand a coding agent, written in the
   imperative and expanded into a useful brief of one or two sentences. Empty
-  string when the action is unknown.
+  string for any action other than the project ones.
 
 Reply with JSON only.
 EOF
@@ -172,20 +197,28 @@ open_agent() {
   # shellcheck disable=SC2016  # the single quotes are the point: $1/$2/$3 are
   # the *inner* shell's positional parameters, passed after the `_` below.
   # Interpolating here would put a spoken transcript into a shell command line.
+  #
+  # Closing the inherited pipes matters now that the widget runs this script as
+  # a tracked process: a backgrounded terminal holding stdout open keeps the
+  # widget's collector waiting for EOF long after the script itself is gone.
   setsid xdg-terminal-exec --title="$title" -- \
-    bash -lc 'cd "$1" && "$2" "$3"; exec bash -l' _ "$dir" "$OMANTRA_AGENT" "$initial" &
+    bash -lc 'cd "$1" && "$2" "$3"; exec bash -l' _ "$dir" "$OMANTRA_AGENT" "$initial" \
+    >/dev/null 2>&1 &
 }
 
 do_new_project() {
   [ -z "$slug" ] && die "could not name a project from: $transcript"
   local dir="$OMANTRA_PROJECTS/$slug"
 
+  # The agent is named in the plan because it is the part that isn't obvious:
+  # which project got picked is a guess about what was said, and which command
+  # opens it is a setting the user may have changed since.
   if [ -d "$dir" ]; then
-    notify "Project already exists" "Opening $slug"
+    plan "OPEN" "$slug · $OMANTRA_AGENT"
   else
+    plan "NEW PROJECT" "$slug · $OMANTRA_AGENT"
     run mkdir -p "$dir"
     run git -C "$dir" init -q
-    notify "New project: $slug" "$prompt"
   fi
 
   open_agent "$dir" "$prompt" "$OMANTRA_AGENT: $slug"
@@ -194,19 +227,33 @@ do_new_project() {
 do_open_project() {
   [ -z "$slug" ] && die "no project named in: $transcript"
   local match
-  if ! match="$(find_project "$slug")"; then
-    notify "No such project" "Nothing in $OMANTRA_PROJECTS matches \"$slug\""
-    exit 1
-  fi
-  notify "Opening $match" "$prompt"
+  match="$(find_project "$slug")" \
+    || die "nothing in $OMANTRA_PROJECTS matches \"$slug\""
+  plan "OPEN" "$match · $OMANTRA_AGENT"
   open_agent "$OMANTRA_PROJECTS/$match" "$prompt" "$OMANTRA_AGENT: $match"
+}
+
+do_set_theme() {
+  [ -z "$slug" ] && die "no theme named in: $transcript"
+  command -v omarchy-theme-set >/dev/null \
+    || die "omarchy-theme-set is not on PATH — theme switching needs Omarchy"
+
+  local match
+  match="$(find_theme "$slug")" \
+    || die "no installed theme matches \"$(theme_title "$slug")\""
+
+  # The desktop repainting is its own confirmation, so the plan only has to name
+  # what was picked — which is the part worth seeing when speech was approximate
+  # and the match widened to a substring.
+  plan "THEME" "$(theme_title "$match")"
+  run omarchy-theme-set "$match"
 }
 
 # Not understood is not a failure — hand the words back so the take is not
 # lost, and let the user decide what to do with them.
 do_unknown() {
+  plan "NOT UNDERSTOOD" "copied to the clipboard"
   run wl-copy -- "$transcript"
-  notify "Not understood" "Copied to clipboard: $transcript"
   exit 0
 }
 

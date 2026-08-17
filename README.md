@@ -98,26 +98,62 @@ The bar glyph shows the mode: 󰗋 idle, 󰚩 command, 󰑊 recording, 󰔟 tran
 Idle is a head with sound coming out of it rather than a microphone: that
 glyph belongs to Omarchy's own mic widget, which this one used to duplicate
 exactly, and Omantra is about speaking to the machine rather than about the
-input device.
+input device. The chip below uses the same glyphs, plus 󰄬 for a landed take and
+󰅚 for a failure.
 
-While a take is running, a card lands in the middle of the screen over a dimmed
-desktop — the Omarchy mark, a level meter, the mode, and the clock — and stays
-until the transcript comes back, then flashes what it heard. The double-tap has
-no visible target to aim at, so the answer to "is it listening?" has to arrive
-where the eyes already are.
+While a take is running, a chip sits at the top center of the screen just under
+the bar and stays until the transcript comes back, then flashes what it heard. The
+double-tap has no visible target to aim at, so the answer to "is it listening?"
+has to arrive where the eyes already are; and because dictation is something you
+do *while* working, it arrives without dimming the screen or covering the window
+you are talking at. Only the width changes between phases, never the height.
 
-Nothing on the card animates on a timer. The only thing that moves is the meter,
+One line, in two groups a hairline apart:
+
+```
+󰚩 COMMAND 0:03 ▁▄▂  │  [Super] twice to send  [esc] to discard
+└─── what it is doing ───┘  └────── how to end it ──────┘
+```
+
+State on the left at full contrast, controls on the right at a third of it. The
+left half is read every take; the right half only until the gesture is learned,
+and a status chip whose instructions are as loud as its status is mostly
+instructions. The keys are drawn as keycaps rather than prose because a sentence
+at this size is a gray stripe the eye skips. The chip's border carries the state
+too — accent while the mic is hot, urgent on a failure, the ordinary popup edge
+once the take has landed — which is legible from across the room, the reach the
+dimmed screen used to buy.
+
+In command mode the chip carries the rest of the round trip, because that is
+where the machine is guessing. Once the words are transcribed it shows `DECIDING`
+next to them while the model picks an action, and then the action itself —
+`OPEN todo-app · claude`, `THEME Nord`, `NOT UNDERSTOOD` — printed by `omantra`
+before it does anything, so what is about to happen is readable while the
+terminal is still opening. The agent is named because it is the part that isn't
+obvious: which project got picked is a guess about what was said, and which
+command opens it is a setting you may have changed since.
+
+That is also why nothing succeeds into a notification any more. A tray entry for
+a theme switch you can watch happen is the same news twice, and it has to be
+dismissed; the chip says it and gets out of the way. Failures still notify, since
+those are the one outcome that has to outlive a chip that flashes for three
+seconds — and they notify once, from `omantra` itself, which is the half that
+knows what went wrong and the half a bare keybind runs with no widget watching.
+The `notify` setting now means failures only.
+
+Nothing on the chip animates on a timer. The only thing that moves is the meter,
 and it moves because the mic heard something: a second ffmpeg reads the same
-source and prints an RMS figure 20 times a second, and the bars follow it. A card
-that pulses on its own says "I am a widget"; a card that answers your voice says
-"I can hear you". The floor is set by the quietest moment of the take rather than
-by a constant, because one machine's silence is -38 dBFS and another's is -55,
-and a meter that shows a quarter of a bar in an empty room has stopped saying
-anything.
+source and prints an RMS figure 20 times a second, and the columns follow it. A
+chip that pulses on its own says "I am a widget"; a chip that answers your voice
+says "I can hear you". Silence is empty tracks rather than a row of stubs, since
+anything left standing at rest gets read as punctuation at this size. The floor
+is set by the quietest moment of the take rather than by a constant, because one
+machine's silence is -38 dBFS and another's is -55, and a meter that shows a
+quarter of a bar in an empty room has stopped saying anything.
 
-The card is the only clickable part of that surface: clicking it ends the take,
+The chip is the only clickable part of that surface: clicking it ends the take,
 and clicks anywhere else go to the window underneath. Esc throws the take away.
-That last one is why the card holds the keyboard while the mic is hot — a layer
+That last one is why the chip holds the keyboard while the mic is hot — a layer
 surface only receives keys if it asks for them — and hands it straight back the
 moment the take ends. Hyprland resolves its own keybinds before the focused
 surface sees anything, so Super gestures keep working throughout; the cost is
@@ -184,12 +220,33 @@ return one of a fixed set of actions:
 |---|---|---|
 | `new_project` | `name`, `prompt` | mkdir under `~/projects`, `git init`, open the agent with the brief |
 | `open_project` | `name`, `prompt` | fuzzy-match an existing project, open the agent there |
-| `unknown` | — | copy the words to the clipboard and say so |
+| `set_theme` | `name` | fuzzy-match an installed Omarchy theme, `omarchy-theme-set` it |
+| `unknown` | — | copy the words to the clipboard and say so in the chip |
 
 A misheard sentence can at worst pick the wrong action from a set that is
 entirely non-destructive; it cannot invent one. The slug is re-sanitised in
 bash after the model returns, so a stray `../` cannot escape `~/projects` even
 if the model emits one.
+
+`set_theme` is the same shape a step further: the model picks a name, and bash
+decides whether that name is a theme. The list of installed themes goes into
+the system prompt — read from `~/.config/omarchy/themes` and
+`$OMARCHY_PATH/themes`, the two trees Omarchy merges — and the name that comes
+back is matched against those directories again before anything is applied.
+So a theme the model has heard of but you do not have is a "no installed theme
+matches" failure, not a failed command:
+
+```bash
+omantra "switch to tokyo night"        # -> omarchy-theme-set tokyo-night
+omantra "make it look like gruvbox"    # -> omarchy-theme-set gruvbox
+omantra "go back to velvetnight"       # a bare theme name is enough
+omantra --dry-run "I want a dark theme"  # prints the command, runs nothing
+```
+
+Matching widens from exact to substring, because speech gets names
+approximately right and `omarchy-theme-set` needs them exactly right: "tokyo"
+finds `tokyo-night`, "latte" finds `catppuccin-latte`. Exact wins outright, so
+"catppuccin" is never answered with `catppuccin-latte`.
 
 Every decision is appended to
 `~/.local/state/omantra/history.jsonl` next to the transcript that
@@ -202,20 +259,27 @@ jq -r 'select(.action == "unknown") | .transcript' ~/.local/state/omantra/histor
 ```
 
 Adding an action means one row in the `ACTIONS` table at the top of
-`bin/omantra` and a matching `do_<name>` function. The JSON schema enum, the
-system prompt and the dispatch are all generated from that table, so there is
-no second and third place to keep in step. Keep them non-destructive; nothing
-here asks for confirmation.
+`bin/omantra` and a matching `do_<name>` function, plus a `plan` call before the
+side effect. The JSON schema enum, the system prompt and the dispatch are all
+generated from that table, so there is no second and third place to keep in
+step. Keep them non-destructive; nothing here asks for confirmation.
+
+`plan` is the whole interface between the two halves: one line on stdout,
+`plan: LABEL|subject`, which the widget reads and puts in the chip. Diagnostics
+go to stderr and become the chip's failure text, and `--dry-run`'s `would:`
+lines are the only other thing on stdout — so running the script from a terminal
+still reads like a normal command, and the widget still has one line to parse.
 
 ## Layout
 
 ```
 manifest.json                 plugin declaration + settings schema
 BarWidget.qml                 the bar widget: four Processes, one state machine
-VoiceOverlay.qml              the centered "speak now" card
+VoiceOverlay.qml              the "speak now" chip under the bar
 ConfigPanel.qml               the settings card — a front-end for omantra-config
 lib/config.sh                 paths, versions and defaults — sourced by everything
 lib/project.sh                slugify + find_project, the pure half of dispatch
+lib/theme.sh                  listing and matching installed Omarchy themes
 bin/omantra-transcribe        audio file -> text
 bin/omantra-supertap          double-tap detector for the Super key
 bin/omantra-config            read and write ~/.config/omantra/config

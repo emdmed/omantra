@@ -45,8 +45,8 @@ OMANTRA_SETTINGS=(
   "OMANTRA_MAX_SECONDS|int:10:3600|maxSeconds|Max recording length (seconds)"
   "OMANTRA_COPY_CLIPBOARD|bool|copyToClipboard|Copy transcript to the clipboard"
   "OMANTRA_TYPE_OUT|bool|typeOut|Type transcript into the focused window"
-  "OMANTRA_NOTIFY|bool|notify|Show a notification when done"
-  "OMANTRA_OVERLAY|bool|overlay|Show the centered speak-now overlay"
+  "OMANTRA_NOTIFY|bool|notify|Notify when something fails"
+  "OMANTRA_OVERLAY|bool|overlay|Show the speak-now chip under the bar"
 )
 
 omantra_setting_row() {

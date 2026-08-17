@@ -352,7 +352,8 @@ PanelWindow {
       Toggle {
         id: notifyToggle
         width: parent.width
-        label: "Notify when done"
+        label: "Notify on failures"
+        description: "Successes are shown in the chip, not the tray"
         onClicked: checked = !checked
       }
 
@@ -360,7 +361,7 @@ PanelWindow {
         id: overlayToggle
         width: parent.width
         label: "Speak-now overlay"
-        description: "The centered card while the mic is hot"
+        description: "The chip under the bar while the mic is hot"
         onClicked: checked = !checked
       }
 

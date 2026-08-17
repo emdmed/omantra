@@ -48,7 +48,11 @@ BarWidget {
   readonly property int maxSeconds: configured("OMANTRA_MAX_SECONDS", setting("maxSeconds", 300))
   readonly property bool copyToClipboard: configured("OMANTRA_COPY_CLIPBOARD", setting("copyToClipboard", true))
   readonly property bool typeOut: configured("OMANTRA_TYPE_OUT", setting("typeOut", false))
-  readonly property bool notifyOnDone: configured("OMANTRA_NOTIFY", setting("notify", true))
+  // Failures only. Everything that goes right is already on screen in the chip,
+  // and a notification for it is the same news a second time — with a tray
+  // entry to dismiss. A failure is the one outcome that has to outlive a chip
+  // that flashes for three seconds.
+  readonly property bool notifyOnError: configured("OMANTRA_NOTIFY", setting("notify", true))
   readonly property bool overlayEnabled: configured("OMANTRA_OVERLAY", setting("overlay", true))
 
   // "dictate" puts the transcript on the clipboard; "command" hands it to the
@@ -61,9 +65,11 @@ BarWidget {
   // derived from this property, so there is no way to be recording and
   // transcribing at once, and no pair of flags that can disagree.
   //
-  //   idle → recording → working → done | error → idle
-  //            ↓
-  //        cancelling → idle
+  //   idle → recording → working →       done | error → idle
+  //            ↓                    ↑
+  //        cancelling → idle    interpreting          (command mode only)
+  //
+  //   idle → recopied → idle                          (middle click, no mic)
   //
   // "cancelling" is the beat between the SIGTERM of a discarded take and
   // pw-record actually exiting; it is what lets recProc.onExited tell "user
@@ -72,10 +78,15 @@ BarWidget {
   // "working" starting the moment recording stops — rather than when the
   // recorder exits — also closes a gap where neither flag was set and the
   // overlay blinked out and back in between the two.
+  //
+  // "interpreting" is the second slow half of command mode: a model call, then
+  // a terminal. It used to be invisible — the transcript was fired off detached
+  // and the chip flashed "SENT" over a decision that had not been made yet.
   property string phase: "idle"
 
   readonly property bool recording: phase === "recording"
   readonly property bool working: phase === "working"
+  readonly property bool interpreting: phase === "interpreting"
   readonly property bool busy: recording || working
 
   property int elapsed: 0
@@ -86,17 +97,29 @@ BarWidget {
   property string lastText: ""
   property string lastError: ""
 
+  // What the interpreter said it was about to do, off its `plan:` line: the
+  // state word and its subject, e.g. "OPEN" / "todo-app · claude". Empty until
+  // it has decided, and cleared at the start of every command take so a new
+  // one can never flash the last one's decision.
+  property string planLabel: ""
+  property string planDetail: ""
+
   // The overlay understands exactly the phases the machine has, minus the two
   // that mean "nothing to show".
   readonly property string overlayPhase:
     (!overlayEnabled || phase === "idle" || phase === "cancelling") ? "" : phase
 
   readonly property bool commandMode: mode === "command"
+  // The one phase the bar has no glyph of its own for: a model deciding is not
+  // recording and not transcribing, and the idle glyph would say "nothing is
+  // happening" while a terminal is about to open.
+  readonly property bool showingCommandGlyph: interpreting || (busy && commandMode)
   // At rest this is a head with sound coming out of it, not a microphone: the
   // stock omarchy.microphone widget is already a microphone, down to the same
   // glyph, and two identical mic icons in one bar is one too many. This one is
   // about speaking to the machine rather than about the input device.
-  readonly property string glyph: busy ? (commandMode ? "󰚩" : (recording ? "󰑊" : "󰔟")) : "󰗋"
+  readonly property string glyph:
+    showingCommandGlyph ? "󰚩" : (recording ? "󰑊" : (working ? "󰔟" : "󰗋"))
 
   readonly property string elapsedLabel: {
     var m = Math.floor(elapsed / 60)
@@ -107,7 +130,9 @@ BarWidget {
   readonly property string statusText: {
     if (recording) return (commandMode ? "Command " : "Recording ") + elapsedLabel + " — click to transcribe"
     if (working) return "Transcribing…"
+    if (interpreting) return "Interpreting: " + lastText
     if (lastError !== "") return "Failed: " + lastError
+    if (planLabel !== "") return planLabel + ": " + planDetail
     if (lastText !== "") return (commandMode ? "Sent: " : "Copied: ") + lastText
     return "Dictate — click to record · right click for settings"
   }
@@ -115,9 +140,11 @@ BarWidget {
   function start(requestedMode) {
     // Only idle takes a new take: "done"/"error" are still showing the last
     // result, and starting from there would be a take begun over a stale card.
-    if (phase !== "idle" && phase !== "done" && phase !== "error") return
+    if (phase !== "idle" && phase !== "done" && phase !== "error" && phase !== "recopied") return
     mode = requestedMode === "command" ? "command" : "dictate"
     lastError = ""
+    planLabel = ""
+    planDetail = ""
     elapsed = 0
     flashTimer.stop()
     phase = "recording"
@@ -180,25 +207,29 @@ BarWidget {
 
   function deliver(text) {
     lastText = text
-    settle("done")
 
     if (commandMode) {
-      // The interpreter owns its own notifications from here — it knows what it
-      // decided to do, which is the useful thing to report, not the words.
-      Quickshell.execDetached({ command: [interpreterCommand, text] })
-      if (notifyOnDone) notify("Heard", text)
+      // Tracked, not detached. The interpreter is the half that decides what a
+      // spoken sentence meant, and that decision is the thing worth showing —
+      // so the chip waits on it, reads the plan off its stdout, and turns a
+      // non-zero exit into the error phase instead of losing it to a subprocess
+      // nobody was watching.
+      phase = "interpreting"
+      interpProc.running = true
       return
     }
 
     if (copyToClipboard) Quickshell.execDetached({ command: ["wl-copy", "--", text] })
     if (typeOut) Quickshell.execDetached({ command: ["wtype", "--", text] })
-    if (notifyOnDone) notify("Transcribed", text)
+    settle("done")
   }
 
   function recopy() {
     if (lastText === "") return
     Quickshell.execDetached({ command: ["wl-copy", "--", lastText] })
-    if (notifyOnDone) notify("Copied again", lastText)
+    // A click with no visible answer is a click you make twice. Nothing else is
+    // on screen at this point, so the chip is the receipt.
+    settle("recopied")
   }
 
   // Never over a live take: the panel takes the keyboard, and the overlay is
@@ -230,12 +261,20 @@ BarWidget {
   }
 
   // The one timer that returns the machine to idle: a result stays up long
-  // enough to read, and an error stays up longer because it has more to say.
+  // enough to read, an error stays up longer because it has more to say, and a
+  // command's plan sits in between — two fields to read instead of one, and the
+  // last chance to notice that the machine misheard which project you meant.
   Timer {
     id: flashTimer
-    interval: root.phase === "error" ? 3200 : 1800
+    interval: root.phase === "error" ? 3200 : (root.planLabel !== "" ? 2600 : 1800)
     onTriggered: root.phase = "idle"
   }
+
+  // How much of the top edge the overlay has to keep clear. Only a visible top
+  // bar is in its way: a hidden bar, or one on another edge, leaves the chip
+  // sitting at the gap from the screen edge like any other popup.
+  readonly property int overlayTopClearance:
+    bar && !vertical && String(bar.position || "top") === "top" && bar.barHidden !== true ? barSize : 0
 
   // The gesture that starts a take has no visible target, so the feedback that
   // it worked can't live in the bar. This is the surface the user actually
@@ -246,10 +285,13 @@ BarWidget {
     // whichever one Quickshell would have picked.
     screen: root.QsWindow.window ? root.QsWindow.window.screen : null
     phase: root.overlayPhase
+    topClearance: root.overlayTopClearance
     commandMode: root.commandMode
     elapsedLabel: root.elapsedLabel
     resultText: root.lastText
     errorText: root.lastError
+    planLabel: root.planLabel
+    planDetail: root.planDetail
     level: root.level
     onStopRequested: root.stop()
     onCancelRequested: root.cancel()
@@ -347,7 +389,7 @@ BarWidget {
       if (exitCode !== 0) {
         root.lastError = String(transcribeProc.stderr.text || "").trim() || ("exit " + exitCode)
         root.settle("error")
-        if (root.notifyOnDone) root.notify("Transcription failed", root.lastError)
+        if (root.notifyOnError) root.notify("Transcription failed", root.lastError)
         return
       }
 
@@ -355,11 +397,53 @@ BarWidget {
       if (text === "") {
         root.lastError = "No speech detected"
         root.settle("error")
-        if (root.notifyOnDone) root.notify("Nothing to transcribe", "No speech detected")
+        if (root.notifyOnError) root.notify("Nothing to transcribe", "No speech detected")
         return
       }
 
       root.deliver(text)
+    }
+  }
+
+  // Command mode's second half: the transcript in, one desktop action out.
+  //
+  // It reports twice. The `plan:` line lands as soon as the model has picked an
+  // action — a second or two before the terminal appears — and that is what the
+  // chip shows, because "OPEN todo-app · claude" is the sentence that tells the
+  // user whether they were understood. The exit code lands later and only
+  // matters when it isn't zero.
+  Process {
+    id: interpProc
+    command: [root.interpreterCommand, root.lastText]
+    stderr: StdioCollector { waitForEnd: true }
+
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function(line) {
+        var match = String(line).match(/^plan: ([^|]*)\|(.*)$/)
+        if (!match) return
+        root.planLabel = match[1]
+        root.planDetail = match[2]
+        // From here the script is only opening a window, so the chip flashes
+        // the decision and lets go rather than waiting on a terminal.
+        root.settle("done")
+      }
+    }
+
+    onExited: function(exitCode) {
+      if (exitCode === 0) return
+      // `omantra: ` on the front of its own diagnostics is for a terminal, where
+      // the reader needs to know which command in a pipeline spoke. In the chip
+      // it is eleven characters of the elision budget saying nothing.
+      root.lastError = String(interpProc.stderr.text || "").trim().replace(/^omantra:\s*/, "")
+        || ("exit " + exitCode)
+      // Deliberately overrides a plan that already flashed: a decision that was
+      // announced and then failed is exactly the case worth interrupting for.
+      //
+      // No notification from here. `omantra` notifies its own failures — it has
+      // to, since a keybind can run it with no widget watching — and a second
+      // copy from this side was landing in the tray next to the first.
+      root.settle("error")
     }
   }
 
