@@ -126,6 +126,12 @@ omantra_endpoint_up() {
   curl -sS -o /dev/null --connect-timeout 2 --max-time 5 "$OMANTRA_ENDPOINT" 2>/dev/null
 }
 
+# Where web_search sends a query. A setting rather than a literal because the
+# search engine is a preference, and because it is the one action that leaves
+# the machine — so it should be visible and swappable rather than buried in the
+# dispatch. `%s` is where the URL-encoded query goes.
+OMANTRA_SEARCH_URL="${OMANTRA_SEARCH_URL:-https://duckduckgo.com/?q=%s}"
+
 OMANTRA_LOG="${OMANTRA_LOG:-$OMANTRA_STATE_DIR/history.jsonl}"
 # The log is the record of what the model heard versus what it did, which is
 # only useful recent. Trim rather than grow without bound.

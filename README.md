@@ -221,12 +221,82 @@ return one of a fixed set of actions:
 | `new_project` | `name`, `prompt` | mkdir under `~/projects`, `git init`, open the agent with the brief |
 | `open_project` | `name`, `prompt` | fuzzy-match an existing project, open the agent there |
 | `set_theme` | `name` | fuzzy-match an installed Omarchy theme, `omarchy-theme-set` it |
+| `open_app` | `name` | fuzzy-match an installed desktop entry, launch it through `uwsm app` |
+| `focus_workspace` | `number` | `hyprctl dispatch workspace N` — the Super+N binding, reached by voice |
+| `move_to_workspace` | `number` | `hyprctl dispatch movetoworkspace N` |
+| `fullscreen` | — | `hyprctl dispatch fullscreen`, which toggles, so saying it twice undoes it |
+| `toggle` | `switch` | one of Omarchy's own switches: night light, do-not-disturb, stay-awake, screensaver, bar, transparency, mute |
+| `capture` | `kind` | `omarchy-capture-screenshot fullscreen`, or start/stop a screen recording |
+| `set_volume` | `level` | `wpctl set-volume` to a named percentage |
+| `nudge_volume` | `direction` | the same, ±10% |
+| `web_search` | `query` | `xdg-open` on `OMANTRA_SEARCH_URL` — the one action that leaves the machine |
 | `unknown` | — | copy the words to the clipboard and say so in the chip |
 
 A misheard sentence can at worst pick the wrong action from a set that is
-entirely non-destructive; it cannot invent one. The slug is re-sanitised in
-bash after the model returns, so a stray `../` cannot escape `~/projects` even
-if the model emits one.
+entirely non-destructive; it cannot invent one. Every field is re-checked in
+bash after the model returns, so a stray `../` cannot escape `~/projects` and a
+workspace number outside 1–10 is a failure rather than a dispatch, even if the
+model emits one.
+
+The schema is a union — one branch per action, carrying only that action's
+fields — rather than one flat object offering every field to every action:
+
+```jsonc
+{ "oneOf": [
+  { "properties": { "action": { "const": "new_project" },
+                    "name": {…}, "prompt": {…} },
+    "required": ["action", "name", "prompt"], "additionalProperties": false },
+  { "properties": { "action": { "const": "focus_workspace" }, "number": {…} },
+    "required": ["action", "number"], "additionalProperties": false },
+  …
+] }
+```
+
+Flat worked while both actions wanted the same two fields, and stops working
+the moment they differ: a model shown `name`, `prompt` and `number` on every
+action, and told to leave the irrelevant ones empty, will sooner or later fill
+the wrong one. Under a union, `focus_workspace` has no `name` property to fill
+— the grammar cannot produce one — and no action is ever asked to emit a field
+whose only correct value is `""`. `action` comes first in every branch, which
+is also what makes the union cheap to sample: the alternatives share the prefix
+`{"action":"` and diverge on the name, so choosing the action is choosing the
+rest of the shape.
+
+The cost is that actions now compete on their *sentences*, not just their
+names, and with a dozen of them that competition is the whole game. Three of
+these were only found by running real sentences past a real model:
+
+- `focus_workspace` first read "the user wants to switch to another workspace",
+  and "switch to tokyo night" started landing on workspace 2 — the model was
+  matching the verb rather than the object. Its sentence now leads with the
+  discriminator (a workspace is always a number) and says the verb means
+  nothing on its own.
+- `focus_workspace` and `move_to_workspace` take the same slot and differ only
+  in what moves, so each sentence now says what *stays put* as well as what
+  goes, and points at the other one.
+- Volume was one action with a `direction` slot deciding whether `level` meant
+  "end up here" or "change by this much". "turn it up a bit" came back as
+  `quieter` no matter how the enum was worded — the model is markedly better at
+  choosing an action than at filling a slot that changes what a sibling slot
+  means. Splitting it into `set_volume` and `nudge_volume` fixed every phrasing
+  at once, because the union makes the action the first thing sampled. When a
+  slot is doing work the action name should be doing, that is the fix.
+
+Which is the general shape: a misclassification here is a prompt bug, and the
+history log is where you find it. The sweep that keeps this honest is 38
+sentences run past a real llama-server, not a unit test — the tests cover the
+tables and the matchers, and no test can tell you the model reads your sentence
+differently than you do.
+
+`open_app` is `set_theme` again in a second domain: the installed applications
+go into the prompt as display names, and the name that comes back is matched
+against the desktop entries once more before anything is launched. Matching
+widens the same way, with one extra tier at the end — an entry's own `Keywords`
+and `Categories`. That is what answers a request that names a job rather than a
+program, since nobody says "Nautilus" out loud, they say "the file manager", and
+`FileManager` is a category Nautilus already declares. It comes last because it
+is the vaguest: a program that calls itself Files should win over one that
+merely lists the category.
 
 `set_theme` is the same shape a step further: the model picks a name, and bash
 decides whether that name is a theme. The list of installed themes goes into
@@ -254,15 +324,35 @@ produced it — when it mishears you, that shows whether the fault was the ear o
 the interpreter. One JSON object per line, trimmed to the most recent
 `OMANTRA_LOG_MAX_LINES` (2000) entries:
 
+```jsonc
+{"transcript":"go to workspace three","action":"focus_workspace","fields":{"number":"3"}}
+```
+
 ```bash
 jq -r 'select(.action == "unknown") | .transcript' ~/.local/state/omantra/history.jsonl
 ```
 
-Adding an action means one row in the `ACTIONS` table at the top of
-`bin/omantra` and a matching `do_<name>` function, plus a `plan` call before the
-side effect. The JSON schema enum, the system prompt and the dispatch are all
-generated from that table, so there is no second and third place to keep in
+`fields` holds the slots that action declared, as they were after sanitising. A
+value that failed sanitising is logged too, under its raw text with an
+`"invalid"` key naming the slot that rejected it, and the entry is written
+*before* the failure is reported — a value the grammar should have made
+impossible is the single most interesting thing that can reach the history, and
+dying first was throwing it away.
+
+Adding an action means one row in the `ACTIONS` table in `lib/actions.sh` —
+name, the fields it takes, and the sentence that teaches the model when to pick
+it — and a matching `do_<name>` function in `bin/omantra`, with a `plan` call
+before the side effect. The JSON schema, the system prompt and the dispatch are
+all generated from that table, so there is no second and third place to keep in
 step. Keep them non-destructive; nothing here asks for confirmation.
+
+A field the action needs and no existing action has is one row in `FIELDS`
+above it: key, type, and what to tell the model it is for. The type is the
+whole of it — `slug`, `string` or `integer:MIN:MAX` — and it drives both the
+JSON schema the sampler enforces and the re-validation on the way back, so a
+range is written down once. Each slot arrives in the `do_` function as a
+variable named after the field, already sanitised: `$name` is slugified,
+`$number` is in range or the take has already failed.
 
 `plan` is the whole interface between the two halves: one line on stdout,
 `plan: LABEL|subject`, which the widget reads and puts in the chip. Diagnostics
@@ -278,8 +368,10 @@ BarWidget.qml                 the bar widget: four Processes, one state machine
 VoiceOverlay.qml              the "speak now" chip under the bar
 ConfigPanel.qml               the settings card — a front-end for omantra-config
 lib/config.sh                 paths, versions and defaults — sourced by everything
+lib/actions.sh                the action + field tables, and the schema built from them
 lib/project.sh                slugify + find_project, the pure half of dispatch
 lib/theme.sh                  listing and matching installed Omarchy themes
+lib/app.sh                    listing and matching installed desktop entries
 bin/omantra-transcribe        audio file -> text
 bin/omantra-supertap          double-tap detector for the Super key
 bin/omantra-config            read and write ~/.config/omantra/config
@@ -326,11 +418,15 @@ The suite also covers the settings file, which is the one thing the panel and
 the scripts both depend on: precedence, quoting, junk lines, the keys a file is
 allowed to set at all, and that a value is never executed.
 
+`web_search` is the one action that sends anything off the machine, so where it
+sends it is a setting rather than a literal: `OMANTRA_SEARCH_URL`, DuckDuckGo by
+default, with `%s` for the URL-encoded query.
+
 Environment overrides, all read through `lib/config.sh`: `OMANTRA_THREADS`,
 `OMANTRA_MODEL`, `OMANTRA_SHERPA_BIN`, `OMANTRA_ENDPOINT`, `OMANTRA_PROJECTS`,
 `OMANTRA_AGENT` (defaults to `claude`), `OMANTRA_MAX_SECONDS`,
 `OMANTRA_TAP_WINDOW_MS`, `OMANTRA_LOG`, `OMANTRA_LOG_MAX_LINES`,
-`OMANTRA_CONFIG_FILE`. The ones the
+`OMANTRA_CONFIG_FILE`, `OMANTRA_SEARCH_URL`. The ones the
 panel writes are also settable with `omantra-config set`; see
 `omantra-config keys` for the list.
 
@@ -349,5 +445,7 @@ panel writes are also settable with `omantra-config set`; see
 ## Requirements
 
 Omarchy 4 (Quickshell shell), PipeWire, and `git ffmpeg jq curl wl-clipboard
-libnotify xdg-terminal-exec` — `git` because `new_project` initialises a repo.
+libnotify xdg-terminal-exec` — `git` because `new_project` initialises a repo,
+`wpctl` (PipeWire) for the volume actions. `uwsm` or `gtk-launch` to start an
+application, whichever is present.
 Optional: `wtype` for the `typeOut` setting.

@@ -14,30 +14,8 @@ ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 . "$ROOT/lib/config.sh"
 . "$ROOT/lib/project.sh"
 . "$ROOT/lib/theme.sh"
-
-# ---- Actions ----------------------------------------------------------------
-#
-# One row per action: the name the model may return, and the sentence that
-# teaches it when to pick that name. The JSON schema enum, the system prompt and
-# the dispatch are all generated from this table, so adding an action is a row
-# here plus a matching `do_<name>` function below — never three edits that have
-# to agree.
-#
-# Keep them non-destructive; nothing here asks for confirmation.
-ACTIONS=(
-  "new_project|the user wants to start something that does not exist yet."
-  "open_project|the user names an existing project to resume work on."
-  "set_theme|the user wants to change how the desktop looks — its theme, its colours, light or dark — or simply names one of the installed themes listed below."
-  "unknown|the instruction fits none of those, or is too vague to act on."
-)
-
-action_names() { printf '%s\n' "${ACTIONS[@]%%|*}"; }
-action_help() {
-  local row
-  for row in "${ACTIONS[@]}"; do
-    printf -- '- %s: %s\n' "${row%%|*}" "${row#*|}"
-  done
-}
+. "$ROOT/lib/app.sh"
+. "$ROOT/lib/actions.sh"
 
 # ---- Input ------------------------------------------------------------------
 
@@ -104,15 +82,16 @@ An instruction that names one of those is a theme change, whatever verb it
 uses — "go back to nord" is set_theme, not open_project. A name that is not on
 that list is not a theme, however much it sounds like one.
 
-Fields:
-- name: short kebab-case slug for the subject of the request. Lowercase
-  letters, digits and hyphens only. Empty string when the action is unknown.
-  For the project actions it names the project: "a todo app" -> "todo-app".
-  For set_theme it is the theme, copied from the list above rather than
-  invented — the names there are kebab-case already.
-- prompt: a first instruction to hand a coding agent, written in the
-  imperative and expanded into a useful brief of one or two sentences. Empty
-  string for any action other than the project ones.
+Installed applications:
+$(app_names | paste -sd '|' - | sed 's/|/, /g')
+
+Same rule: an instruction that names one of those is open_app, and a program
+that is not on that list is not installed, however well known it is.
+
+Fill only the fields listed in brackets after the action you pick; no action
+takes any other field.
+
+$(field_help)
 
 Reply with JSON only.
 EOF
@@ -130,7 +109,7 @@ fi
 request="$(jq -n \
   --arg system "$SYSTEM" \
   --arg user "$transcript" \
-  --argjson actions "$(action_names | jq -R . | jq -s .)" \
+  --argjson schema "$(action_schema)" \
   '{
     model: "local",
     temperature: 0.1,
@@ -144,16 +123,7 @@ request="$(jq -n \
       json_schema: {
         name: "action",
         strict: true,
-        schema: {
-          type: "object",
-          properties: {
-            action: { type: "string", enum: $actions },
-            name:   { type: "string" },
-            prompt: { type: "string" }
-          },
-          required: ["action","name","prompt"],
-          additionalProperties: false
-        }
+        schema: $schema
       }
     }
   }')"
@@ -166,21 +136,53 @@ content="$(printf '%s' "$response" | jq -r '.choices[0].message.content // empty
 [ -z "$content" ] && die "model returned no content"
 
 action="$(printf '%s' "$content" | jq -r '.action // "unknown"')"
-name="$(printf '%s' "$content" | jq -r '.name // ""')"
-prompt="$(printf '%s' "$content" | jq -r '.prompt // ""')"
+# A model that returns something off the table is treated as `unknown` rather
+# than as an error: the words still reach the clipboard. Settled here rather
+# than at dispatch, so the slots read below are the ones the action we are
+# actually running declares.
+action_row "$action" >/dev/null || action="unknown"
 
-# The schema constrains the shape, not the contents: re-slug here so a stray
-# slash or leading dot from the model can never escape $OMANTRA_PROJECTS.
-slug="$(slugify "$name")"
+# Every field starts empty, so a do_ function can name a slot its action does
+# not declare without tripping `set -u`. This is also where $name, $prompt and
+# $number come from: one variable per FIELDS row, assigned indirectly, which is
+# why shellcheck cannot see them being set below.
+for key in $(field_keys); do printf -v "$key" '%s' ''; done
+
+# Each declared slot, sanitised on the way in — see sanitise_field. The value
+# lands in a variable named after the field, which is what lets a do_ function
+# say `$name` or `$number` and lets this loop stay generic.
+#
+# A slot that fails validation stops the loop but does not exit yet: a value the
+# grammar should have made impossible is the single most interesting thing that
+# can end up in the history, so it gets logged — as the raw text, next to the
+# name of the slot that rejected it — before anything is said about it.
+fields='{}'
+invalid=''
+while IFS= read -r key; do
+  raw="$(printf '%s' "$content" | jq -r --arg k "$key" '.[$k] // ""')"
+  if value="$(sanitise_field "$key" "$raw")"; then
+    printf -v "$key" '%s' "$value"
+  else
+    value="$raw"
+    invalid="$key"
+  fi
+  fields="$(jq -c --arg k "$key" --arg v "$value" '. + {($k): $v}' <<<"$fields")"
+  if [ -n "$invalid" ]; then break; fi
+done < <(action_fields "$action")
 
 mkdir -p "$(dirname "$OMANTRA_LOG")"
 # -c matters: the file is .jsonl, and jq pretty-prints by default, so every
 # entry was landing as five lines that no line-oriented reader could parse.
-jq -nc --arg t "$transcript" --arg a "$action" --arg s "$slug" --arg p "$prompt" \
-  '{transcript:$t, action:$a, slug:$s, prompt:$p}' >> "$OMANTRA_LOG"
+jq -nc --arg t "$transcript" --arg a "$action" --argjson f "$fields" --arg e "$invalid" \
+  '{transcript:$t, action:$a, fields:$f} + (if $e == "" then {} else {invalid:$e} end)' \
+  >> "$OMANTRA_LOG"
 if [ "$(wc -l < "$OMANTRA_LOG")" -gt "$OMANTRA_LOG_MAX_LINES" ]; then
   tail -n "$OMANTRA_LOG_MAX_LINES" "$OMANTRA_LOG" > "$OMANTRA_LOG.tmp"
   mv "$OMANTRA_LOG.tmp" "$OMANTRA_LOG"
+fi
+
+if [ -n "$invalid" ]; then
+  die "the model returned an unusable $invalid: \"$(jq -r --arg k "$invalid" '.[$k]' <<<"$fields")\""
 fi
 
 # ---- Dispatch ---------------------------------------------------------------
@@ -206,47 +208,191 @@ open_agent() {
     >/dev/null 2>&1 &
 }
 
+# shellcheck disable=SC2154  # $name and $prompt are FIELDS rows, filled by the
+# slot loop above.
 do_new_project() {
-  [ -z "$slug" ] && die "could not name a project from: $transcript"
-  local dir="$OMANTRA_PROJECTS/$slug"
+  [ -z "$name" ] && die "could not name a project from: $transcript"
+  local dir="$OMANTRA_PROJECTS/$name"
 
   # The agent is named in the plan because it is the part that isn't obvious:
   # which project got picked is a guess about what was said, and which command
   # opens it is a setting the user may have changed since.
   if [ -d "$dir" ]; then
-    plan "OPEN" "$slug · $OMANTRA_AGENT"
+    plan "OPEN" "$name · $OMANTRA_AGENT"
   else
-    plan "NEW PROJECT" "$slug · $OMANTRA_AGENT"
+    plan "NEW PROJECT" "$name · $OMANTRA_AGENT"
     run mkdir -p "$dir"
     run git -C "$dir" init -q
   fi
 
-  open_agent "$dir" "$prompt" "$OMANTRA_AGENT: $slug"
+  open_agent "$dir" "$prompt" "$OMANTRA_AGENT: $name"
 }
 
+# shellcheck disable=SC2154  # as above.
 do_open_project() {
-  [ -z "$slug" ] && die "no project named in: $transcript"
+  [ -z "$name" ] && die "no project named in: $transcript"
   local match
-  match="$(find_project "$slug")" \
-    || die "nothing in $OMANTRA_PROJECTS matches \"$slug\""
+  match="$(find_project "$name")" \
+    || die "nothing in $OMANTRA_PROJECTS matches \"$name\""
   plan "OPEN" "$match · $OMANTRA_AGENT"
   open_agent "$OMANTRA_PROJECTS/$match" "$prompt" "$OMANTRA_AGENT: $match"
 }
 
 do_set_theme() {
-  [ -z "$slug" ] && die "no theme named in: $transcript"
+  [ -z "$name" ] && die "no theme named in: $transcript"
   command -v omarchy-theme-set >/dev/null \
     || die "omarchy-theme-set is not on PATH — theme switching needs Omarchy"
 
   local match
-  match="$(find_theme "$slug")" \
-    || die "no installed theme matches \"$(theme_title "$slug")\""
+  match="$(find_theme "$name")" \
+    || die "no installed theme matches \"$(theme_title "$name")\""
 
   # The desktop repainting is its own confirmation, so the plan only has to name
   # what was picked — which is the part worth seeing when speech was approximate
   # and the match widened to a substring.
   plan "THEME" "$(theme_title "$match")"
   run omarchy-theme-set "$match"
+}
+
+# The first action whose slot is not a name. `number` arrives range-checked, so
+# the dispatch itself is the same call the Super+N binding makes — this is the
+# existing gesture reached by voice, not a new mechanism.
+# shellcheck disable=SC2154  # $name is a FIELDS row, filled by the slot loop.
+do_open_app() {
+  [ -z "$name" ] && die "no application named in: $transcript"
+  local id
+  id="$(find_app "$name")" || die "no installed application matches \"$name\""
+
+  plan "OPEN" "$(app_title "$id")"
+
+  # uwsm when it is there, because that is how Omarchy starts apps: the program
+  # lands in its own systemd scope, so it outlives this script and shows up in
+  # `systemctl --user` like anything else the launcher opened. gtk-launch is the
+  # fallback, and takes the same desktop entry id.
+  if command -v uwsm >/dev/null; then
+    run setsid uwsm app -- "$id.desktop"
+  else
+    run setsid gtk-launch "$id"
+  fi
+}
+
+hypr() {
+  command -v hyprctl >/dev/null \
+    || die "hyprctl is not on PATH — window and workspace actions need Hyprland"
+  run hyprctl dispatch "$@"
+}
+
+# shellcheck disable=SC2154  # $number is a FIELDS row, filled by the slot loop.
+do_focus_workspace() {
+  plan "WORKSPACE" "$number"
+  hypr workspace "$number"
+}
+
+# shellcheck disable=SC2154  # as above.
+do_move_to_workspace() {
+  plan "MOVE" "to workspace $number"
+  hypr movetoworkspace "$number"
+}
+
+# Hyprland's own toggle, so saying it twice puts the window back — which is the
+# behaviour the keybinding has and therefore the one that will be expected.
+do_fullscreen() {
+  plan "FULLSCREEN" ""
+  hypr fullscreen
+}
+
+# The switches Omarchy already exposes, reached by name instead of by keybind.
+# Each is a toggle in its own right: the command flips it and knows which way,
+# so nothing here has to track state — and saying it again undoes it.
+#
+# shellcheck disable=SC2154  # $switch is a FIELDS row, filled by the slot loop.
+do_toggle() {
+  local cmd label
+  case "$switch" in
+    night-light)    cmd=(omarchy-toggle-nightlight);             label="night light" ;;
+    do-not-disturb) cmd=(omarchy-toggle-notification-silencing); label="do not disturb" ;;
+    stay-awake)     cmd=(omarchy-toggle-idle);                   label="staying awake" ;;
+    screensaver)    cmd=(omarchy-toggle-screensaver);            label="screensaver" ;;
+    bar)            cmd=(omarchy-toggle-bar);                    label="bar" ;;
+    transparency)   cmd=(omarchy-hyprland-window-transparency-toggle); label="transparency" ;;
+    mute)           cmd=(wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle);  label="mute" ;;
+    *)              die "no such switch: $switch" ;;
+  esac
+
+  command -v "${cmd[0]}" >/dev/null || die "${cmd[0]} is not on PATH"
+  plan "TOGGLE" "$label"
+  run "${cmd[@]}"
+}
+
+# shellcheck disable=SC2154  # $kind is a FIELDS row, filled by the slot loop.
+do_capture() {
+  case "$kind" in
+    screenshot)
+      command -v omarchy-capture-screenshot >/dev/null \
+        || die "omarchy-capture-screenshot is not on PATH"
+      # Whole screen rather than the default region picker: the instruction
+      # arrived by voice, so there is no reason to think a mouse is about to
+      # draw a rectangle.
+      plan "SCREENSHOT" ""
+      run omarchy-capture-screenshot fullscreen
+      ;;
+    screen-recording)
+      command -v omarchy-capture-screenrecording >/dev/null \
+        || die "omarchy-capture-screenrecording is not on PATH"
+      # The same command starts and stops: it checks for a running recorder
+      # itself, which is exactly the toggle a single spoken phrase wants.
+      plan "RECORDING" ""
+      run omarchy-capture-screenrecording --fullscreen
+      ;;
+    *) die "no such capture: $kind" ;;
+  esac
+}
+
+# "put it at forty" and "a bit louder" are the same request to a person and
+# different requests to wpctl. They are two actions rather than one action with
+# a direction slot because the model is markedly better at choosing an action
+# than at filling a slot that changes what a sibling slot means: as one action,
+# "turn it up a bit" came back as `quieter` however the enum was worded, and as
+# two it does not. The union schema is what makes that cheap — the branch is
+# chosen by the first thing sampled.
+sink_volume() {
+  command -v wpctl >/dev/null || die "wpctl is not on PATH — volume needs PipeWire"
+  # -l 1 clamps at unity, so a run of "louder" cannot push the sink past 100%.
+  run wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ "$1"
+}
+
+# shellcheck disable=SC2154  # $level is a FIELDS row, filled by the slot loop.
+do_set_volume() {
+  plan "VOLUME" "$level%"
+  sink_volume "$level%"
+}
+
+# A fixed step, because "a bit" and "a lot" are not a number the model should be
+# guessing at — the same 10% the volume keys move by.
+#
+# shellcheck disable=SC2154  # $direction is a FIELDS row.
+do_nudge_volume() {
+  case "$direction" in
+    louder)  plan "VOLUME" "+10%"; sink_volume "10%+" ;;
+    quieter) plan "VOLUME" "-10%"; sink_volume "10%-" ;;
+    *)       die "no such volume direction: $direction" ;;
+  esac
+}
+
+# The one action that leaves the machine, which is why the destination is a
+# setting rather than a literal — see OMANTRA_SEARCH_URL in lib/config.sh.
+#
+# The query is URL-encoded by jq rather than by hand: it is a spoken sentence,
+# so it has spaces and may have anything else.
+#
+# shellcheck disable=SC2154  # $query is a FIELDS row, filled by the slot loop.
+do_web_search() {
+  [ -z "$query" ] && die "nothing to search for in: $transcript"
+  local encoded url
+  encoded="$(jq -rn --arg q "$query" '$q|@uri')"
+  url="${OMANTRA_SEARCH_URL//%s/$encoded}"
+  plan "SEARCH" "$query"
+  run setsid xdg-open "$url"
 }
 
 # Not understood is not a failure — hand the words back so the take is not
@@ -257,8 +403,9 @@ do_unknown() {
   exit 0
 }
 
-# A model that returns something off the table is treated as `unknown` rather
-# than as an error: the words still reach the clipboard.
+# `action` was reconciled against the table before the slots were read, so this
+# only fires for a row someone added without its do_ function. Falling back
+# rather than dying keeps the words reaching the clipboard either way.
 if declare -F "do_$action" >/dev/null; then
   "do_$action"
 else
