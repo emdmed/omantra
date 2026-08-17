@@ -52,6 +52,20 @@ assert_eq "null" \
             | .properties.prompt' <<<"$schema")" \
   "focus_workspace has no prompt property at all"
 
+# The pair most likely to collide: both take one free-text slot, and the only
+# thing keeping them apart is that they take *different* slots with different
+# descriptions. A `query` on investigate would be the first sign that the two
+# rows had been merged by a well-meaning edit.
+assert_eq "action topic" \
+  "$(jq -r '.oneOf[] | select(.properties.action.const == "investigate")
+            | .required | join(" ")' <<<"$schema")" \
+  "investigate requires action and topic"
+
+assert_eq "null" \
+  "$(jq -r '.oneOf[] | select(.properties.action.const == "investigate")
+            | .properties.query' <<<"$schema")" \
+  "investigate has no query property — that is web_search's slot"
+
 assert_eq "action" \
   "$(jq -r '.oneOf[] | select(.properties.action.const == "unknown")
             | .required | join(" ")' <<<"$schema")" \
@@ -139,5 +153,19 @@ assert_eq "- unknown: the instruction fits none of those, or is too vague to act
 assert_eq "$(field_keys | tr '\n' ' ' | sed 's/ $//')" \
   "$(used_fields | tr '\n' ' ' | sed 's/ $//')" \
   "every field in the table is used by some action, in table order"
+
+# ---- The dispatch has a function for every row ------------------------------
+#
+# A row added here without its do_ function falls through to do_unknown, which
+# copies the words to the clipboard and says "not understood" — a failure that
+# looks exactly like a mishearing and is therefore debugged in the wrong half.
+for action in $(action_names); do
+  if grep -q "^do_$action()" "$ROOT/bin/omantra"; then
+    pass "$action has a do_ function in bin/omantra"
+  else
+    fail "$action is in the table but bin/omantra has no do_$action"
+  fi
+  TESTS_RUN=$((TESTS_RUN + 1))
+done
 
 summary

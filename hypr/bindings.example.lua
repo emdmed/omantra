@@ -4,6 +4,10 @@
 o.bind("SUPER + ALT + D", "Dictate to clipboard", "omarchy-shell omantra toggle")
 o.bind("SUPER + ALT + SHIFT + D", "Omantra cancel", "omarchy-shell omantra cancel")
 
+-- Open the newest report a background investigation came back with, in
+-- the report panel. The same thing the "report done" button in the bar does.
+o.bind("SUPER + ALT + R", "Omantra reports", "omarchy-shell omantra report")
+
 -- Settings: the model server, the coding agent, where projects go.
 -- Middle-clicking the mic widget opens the same panel.
 o.bind("SUPER + ALT + C", "Omantra settings", "omarchy-shell omantra config")

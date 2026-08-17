@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Start the local model server command mode talks to.
+#
+#   omantra-serve                    the configured model, on the configured port
+#   omantra-serve ~/models/other.gguf
+#   omantra-serve --check            is one already answering?
+#
+# Command mode needs an OpenAI-compatible endpoint, and the failure everyone
+# meets first is that nothing is listening on it — `omantra` says so and names
+# the flags, which is a sentence to retype every time you reboot. This is that
+# sentence, kept next to the settings it has to agree with.
+#
+# The port is read out of OMANTRA_ENDPOINT rather than written down again: the
+# client and the server disagreeing about which port they are on is precisely
+# the bug this script exists to stop.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+. "$ROOT/lib/config.sh"
+
+die() { echo "omantra-serve: $1" >&2; exit 1; }
+
+# The port out of the endpoint URL, defaulting to http's own when there isn't
+# one. Everything after the host is the completions path and none of this
+# script's business.
+endpoint_port() {
+  local rest="${OMANTRA_ENDPOINT#*://}"
+  rest="${rest%%/*}"
+  case "$rest" in
+    *:*) printf '%s' "${rest##*:}" ;;
+    *)   printf '80' ;;
+  esac
+}
+
+endpoint_host() {
+  local rest="${OMANTRA_ENDPOINT#*://}"
+  rest="${rest%%/*}"
+  printf '%s' "${rest%%:*}"
+}
+
+# The model to load. A setting when you have several, and otherwise the only
+# .gguf in the models directory — asking someone to name a file when there is
+# exactly one candidate is a question with one answer.
+find_model() {
+  local candidates=() file
+  [ -n "${OMANTRA_LLM_MODEL:-}" ] && { printf '%s' "$OMANTRA_LLM_MODEL"; return 0; }
+
+  for file in "$OMANTRA_LLM_MODELS_DIR"/*.gguf; do
+    [ -f "$file" ] && candidates+=("$file")
+  done
+
+  case "${#candidates[@]}" in
+    0) return 1 ;;
+    1) printf '%s' "${candidates[0]}" ;;
+    # Newest first, on the theory that the one you just downloaded is the one
+    # you meant. Named explicitly with OMANTRA_LLM_MODEL when it isn't.
+    #
+    # Sorted on mtime by `find -printf` rather than by `ls -t`, so a filename
+    # with a newline in it cannot become two candidates.
+    *) find "${candidates[@]}" -maxdepth 0 -printf '%T@\t%p\0' \
+         | sort -zrn | head -zn1 | cut -zf2- | tr -d '\0' ;;
+  esac
+}
+
+case "${1:-}" in
+  --check)
+    if omantra_endpoint_up; then
+      echo "answering: $OMANTRA_ENDPOINT"
+    else
+      echo "no answer: $OMANTRA_ENDPOINT" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  -h|--help|help)
+    sed -n '2,12p' "$(readlink -f "${BASH_SOURCE[0]}")" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+esac
+
+model="${1:-}"
+if [ -n "$model" ]; then
+  [ -f "$model" ] || die "no such model file: $model"
+else
+  model="$(find_model)" \
+    || die "no .gguf in $OMANTRA_LLM_MODELS_DIR — download one, or set OMANTRA_LLM_MODEL"
+fi
+
+command -v "$OMANTRA_LLM_SERVER" >/dev/null \
+  || die "$OMANTRA_LLM_SERVER is not on PATH — install llama.cpp, or set OMANTRA_LLM_SERVER"
+
+# Starting a second server on a busy port fails with a bind error a minute
+# later, having already loaded the weights. Asking first costs two seconds.
+if omantra_endpoint_up; then
+  echo "omantra-serve: something is already answering at $OMANTRA_ENDPOINT"
+  exit 0
+fi
+
+echo "omantra-serve: $(basename "$model") on $(endpoint_host):$(endpoint_port) — ctrl-c to stop"
+
+# Foreground, deliberately: this is a thing you start in a terminal and watch,
+# and a background server nobody can see is how you end up with two of them.
+# `exec`, so ctrl-c reaches llama-server rather than this wrapper.
+#
+# The flags are the ones command mode needs rather than a general-purpose set:
+# --jinja for the chat template the grammar sampling rides on, -np 1 because
+# there is one caller, and a context big enough for the system prompt, which
+# carries every installed theme and application.
+exec "$OMANTRA_LLM_SERVER" \
+  --model "$model" \
+  --host "$(endpoint_host)" \
+  --port "$(endpoint_port)" \
+  --ctx-size "$OMANTRA_LLM_CTX" \
+  --jinja \
+  -ngl 99 \
+  -np 1 \
+  "${@:2}"

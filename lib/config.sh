@@ -45,8 +45,10 @@ OMANTRA_SETTINGS=(
   "OMANTRA_MAX_SECONDS|int:10:3600|maxSeconds|Max recording length (seconds)"
   "OMANTRA_COPY_CLIPBOARD|bool|copyToClipboard|Copy transcript to the clipboard"
   "OMANTRA_TYPE_OUT|bool|typeOut|Type transcript into the focused window"
-  "OMANTRA_NOTIFY|bool|notify|Notify when something fails"
+  "OMANTRA_NOTIFY|bool|notify|Notify when a failure has nowhere on screen to be"
   "OMANTRA_OVERLAY|bool|overlay|Show the speak-now chip under the bar"
+  "OMANTRA_INVESTIGATOR|command|-|Agent a background investigation is run with"
+  "OMANTRA_INVESTIGATION_TIMEOUT|int:60:7200|-|Give up on an investigation after (seconds)"
 )
 
 omantra_setting_row() {
@@ -126,11 +128,51 @@ omantra_endpoint_up() {
   curl -sS -o /dev/null --connect-timeout 2 --max-time 5 "$OMANTRA_ENDPOINT" 2>/dev/null
 }
 
+# ---- The model server itself ------------------------------------------------
+#
+# What `omantra-serve` starts on the other end of OMANTRA_ENDPOINT. Not in the
+# settings table above: these describe a server you run, not behaviour of the
+# client, and a machine that talks to a model server down the hall has no use
+# for any of them. Environment or edit-in-place, like the sherpa paths.
+OMANTRA_LLM_SERVER="${OMANTRA_LLM_SERVER:-llama-server}"
+OMANTRA_LLM_MODELS_DIR="${OMANTRA_LLM_MODELS_DIR:-$HOME/models}"
+# Empty means "the only .gguf in there, or the newest of several" — see
+# find_model in bin/omantra-serve.
+OMANTRA_LLM_MODEL="${OMANTRA_LLM_MODEL:-}"
+# Big enough for the system prompt, which carries every installed theme and
+# every installed application by name.
+OMANTRA_LLM_CTX="${OMANTRA_LLM_CTX:-32768}"
+
 # Where web_search sends a query. A setting rather than a literal because the
 # search engine is a preference, and because it is the one action that leaves
 # the machine — so it should be visible and swappable rather than buried in the
 # dispatch. `%s` is where the URL-encoded query goes.
 OMANTRA_SEARCH_URL="${OMANTRA_SEARCH_URL:-https://duckduckgo.com/?q=%s}"
+
+# ---- Investigations ---------------------------------------------------------
+#
+# The one action that takes minutes rather than milliseconds: a subject goes to
+# a coding agent running headless in the background, and a markdown report comes
+# back. The agent is a separate setting from OMANTRA_AGENT because the two jobs
+# are different — one opens a terminal you are sitting in front of, the other
+# runs unattended with no one watching its permission prompts, and you may well
+# want a cheaper model for the second.
+OMANTRA_INVESTIGATOR="${OMANTRA_INVESTIGATOR:-claude}"
+OMANTRA_INVESTIGATIONS="${OMANTRA_INVESTIGATIONS:-$OMANTRA_STATE_DIR/investigations}"
+
+# The tools the background agent is allowed. This is the whole safety story of
+# the feature: nobody is watching, so it can read and research and nothing else
+# — no Bash, no Edit, no Write. It does not need Write, either, since the report
+# is the agent's stdout.
+OMANTRA_INVESTIGATION_TOOLS="${OMANTRA_INVESTIGATION_TOOLS:-WebSearch,WebFetch,Read,Grep,Glob}"
+
+# An unattended agent needs a ceiling, or a question it cannot answer becomes a
+# process that is still running tomorrow.
+OMANTRA_INVESTIGATION_TIMEOUT="${OMANTRA_INVESTIGATION_TIMEOUT:-900}"
+
+# Trimmed like the history log, and for the same reason: the store is only
+# useful recent, and nothing else ever deletes from it.
+OMANTRA_INVESTIGATIONS_KEEP="${OMANTRA_INVESTIGATIONS_KEEP:-50}"
 
 OMANTRA_LOG="${OMANTRA_LOG:-$OMANTRA_STATE_DIR/history.jsonl}"
 # The log is the record of what the model heard versus what it did, which is

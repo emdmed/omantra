@@ -74,7 +74,7 @@
       {
         "key": "notify",
         "type": "boolean",
-        "label": "Show a notification when something fails",
+        "label": "Notify on a failure the bar cannot show",
         "defaultValue": true
       },
       {

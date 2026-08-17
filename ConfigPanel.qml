@@ -64,6 +64,8 @@ PanelWindow {
     // `field.value` is the spin box the user has been typing into — editing one
     // breaks its binding to the other, so a reload sets each explicitly rather
     // than trusting a binding that may already be gone.
+    investigatorField.text = cfg.OMANTRA_INVESTIGATOR || ""
+    timeoutField.value = timeoutField.field.value = cfg.OMANTRA_INVESTIGATION_TIMEOUT || 900
     threadsField.value = threadsField.field.value = cfg.OMANTRA_THREADS || 6
     secondsField.value = secondsField.field.value = cfg.OMANTRA_MAX_SECONDS || 300
     copyToggle.checked = cfg.OMANTRA_COPY_CLIPBOARD === true
@@ -82,6 +84,8 @@ PanelWindow {
     diff("OMANTRA_ENDPOINT", endpointField.text.trim())
     diff("OMANTRA_AGENT", agentField.text.trim())
     diff("OMANTRA_PROJECTS", projectsField.text.trim())
+    diff("OMANTRA_INVESTIGATOR", investigatorField.text.trim())
+    diff("OMANTRA_INVESTIGATION_TIMEOUT", timeoutField.field.value)
     diff("OMANTRA_THREADS", threadsField.field.value)
     diff("OMANTRA_MAX_SECONDS", secondsField.field.value)
     diff("OMANTRA_COPY_CLIPBOARD", copyToggle.checked)
@@ -304,6 +308,45 @@ PanelWindow {
           id: projectsField
           width: parent.width
           placeholderText: "/home/you/projects"
+        }
+      }
+
+      // ----------------------------------------------------------- research
+      //
+      // The background half: "look into…" hands a subject to an agent that runs
+      // headless for minutes and comes back with a report. A separate command
+      // from the coding agent above because the two jobs are different — one
+      // opens a terminal you are sitting in front of, the other runs unattended.
+      PanelSectionHeader { text: "INVESTIGATIONS" }
+
+      Row {
+        width: parent.width
+        spacing: Style.space(16)
+
+        Column {
+          width: parent.width - timeoutField.width - parent.spacing
+          spacing: Style.space(6)
+
+          Text {
+            text: "Background agent"
+            color: Util.alpha(Color.popups.text, 0.6)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          TextField {
+            id: investigatorField
+            width: parent.width
+            placeholderText: "claude"
+          }
+        }
+
+        NumberField {
+          id: timeoutField
+          label: "Give up after (s)"
+          from: 60
+          to: 7200
+          stepSize: 60
         }
       }
 

@@ -45,6 +45,7 @@ FIELDS=(
   "direction|enum:louder,quieter|louder when the instruction asks for more sound, quieter when it asks for less."
   "level|integer:0:100|the percentage the sound should end up at — \"forty percent\" is 40, \"half\" is 50, \"all the way up\" is 100."
   "query|string|what to look up, phrased as it would be typed into a search box."
+  "topic|string|the question to research, written out as a full question or instruction rather than as keywords — \"how does sherpa-onnx decide where a sentence ends\", \"compare Parakeet and Whisper on CPU\". Keep the user's own subject; do not narrow it."
 )
 
 # ---- Actions ----------------------------------------------------------------
@@ -72,7 +73,8 @@ ACTIONS=(
   "capture|kind|the user wants a picture or a video of their screen — \"take a screenshot\", \"start recording\"."
   "set_volume|level|the user names the level the sound should end up at — \"volume to forty percent\", \"put it at half\". Only when a level is actually named."
   "nudge_volume|direction|the user wants more or less sound without naming a level — \"turn it up\", \"louder\", \"a bit quieter\", \"too loud\"."
-  "web_search|query|the user wants something looked up on the web, and has not named a project, an application or a theme."
+  "web_search|query|the user wants a search page opened on something — \"search for\", \"look up\", \"google\" — and has not named a project, an application or a theme. This only opens a browser on the words and leaves the reading to the user, so pick it when they want to be *shown* results rather than told an answer; a request to find something out is investigate."
+  "investigate|topic|the user wants a subject researched and written up — \"look into\", \"research\", \"find out how\", \"figure out whether\", \"tell me about\", any question that wants an answer rather than a list of links. It hands the question to an agent that reads for a few minutes in the background and comes back with a report, so it fits anything too large for a search box, and it is the right pick whenever the instruction is phrased as a question."
   "unknown||the instruction fits none of those, or is too vague to act on."
 )
 

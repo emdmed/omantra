@@ -28,6 +28,7 @@ BarWidget {
   readonly property string transcribeCommand: setting("transcribeCommand", "") || (pluginDir + "/bin/omantra-transcribe")
   readonly property string interpreterCommand: setting("interpreterCommand", "") || (pluginDir + "/bin/omantra")
   readonly property string configCommand: pluginDir + "/bin/omantra-config"
+  readonly property string investigateCommand: pluginDir + "/bin/omantra-investigate"
 
   // What the config panel wrote, reloaded whenever it saves. The scripts read
   // the same file directly, so this copy exists only for the settings the
@@ -48,10 +49,12 @@ BarWidget {
   readonly property int maxSeconds: configured("OMANTRA_MAX_SECONDS", setting("maxSeconds", 300))
   readonly property bool copyToClipboard: configured("OMANTRA_COPY_CLIPBOARD", setting("copyToClipboard", true))
   readonly property bool typeOut: configured("OMANTRA_TYPE_OUT", setting("typeOut", false))
-  // Failures only. Everything that goes right is already on screen in the chip,
-  // and a notification for it is the same news a second time — with a tray
-  // entry to dismiss. A failure is the one outcome that has to outlive a chip
-  // that flashes for three seconds.
+  // The layout says almost everything: the chip carries a take from mic to
+  // result, and the agents button carries an investigation from start to
+  // "report done" or "report failed" without expiring. What is left for a
+  // notification is the narrow case of news that outlives the surface meant to
+  // show it — a transcription that died while you were in another window — and
+  // this switch is that case, not a general "tell me things" knob.
   readonly property bool notifyOnError: configured("OMANTRA_NOTIFY", setting("notify", true))
   readonly property bool overlayEnabled: configured("OMANTRA_OVERLAY", setting("overlay", true))
 
@@ -103,6 +106,121 @@ BarWidget {
   // one can never flash the last one's decision.
   property string planLabel: ""
   property string planDetail: ""
+
+  // ---- Investigations --------------------------------------------------------
+  //
+  // A second, independent strand of state: `phase` above is one take from mic to
+  // action and lasts seconds, while an investigation is a headless agent that
+  // runs for minutes with nothing on screen. They never interact — you can start
+  // a take while three agents are reading — so they are two sets of properties
+  // rather than two more phases in the machine above.
+  //
+  // The store is the truth (see lib/investigate.sh); this is a copy of
+  // `omantra-investigate list --json`, refreshed when the runner says so.
+  property var jobs: []
+
+  readonly property int workingCount: {
+    var n = 0
+    for (var i = 0; i < jobs.length; i++) if (jobs[i].status === "running") n += 1
+    return n
+  }
+
+  // Landed and not opened yet. This is the half of the indicator that outlives
+  // the work: an agent that finished while you were in a meeting has to still
+  // be saying so when you come back. Read is a stamp in each job's own
+  // meta.json, so opening one of three leaves the other two saying it.
+  readonly property int unreadCount: {
+    var n = 0
+    for (var i = 0; i < jobs.length; i++) {
+      var job = jobs[i]
+      if (job.status === "done" && job.read === false && job.report) n += 1
+    }
+    return n
+  }
+
+  // The other way a job ends, counted separately because it is the one the bar
+  // has to be able to say out loud. An agent that died four minutes after you
+  // walked away leaves nothing on screen at all, and a failure nobody is told
+  // about reads as an agent that is still thinking — so it sits here, unread,
+  // until the panel shows the log.
+  readonly property int failedCount: {
+    var n = 0
+    for (var i = 0; i < jobs.length; i++) {
+      var job = jobs[i]
+      if (job.status !== "running" && job.status !== "done" && job.read === false) n += 1
+    }
+    return n
+  }
+
+  readonly property bool showingAgents: workingCount > 0 || unreadCount > 0 || failedCount > 0
+
+  // The button says which of the three things is true, in words while the bar
+  // is horizontal and has room for them: an agent is still working, one came
+  // back empty-handed, or a report is waiting. A count only appears when there
+  // is more than one of a kind, since "1" next to a sentence that already says
+  // "report" is a digit doing nothing.
+  //
+  // Working wins over the rest — a bar that said "failed" while three agents
+  // are still reading would be answering a question nobody asked yet — and a
+  // failure wins over a landed report, because it is the half of the news that
+  // needs a decision.
+  readonly property string agentLabel: {
+    if (workingCount > 0) {
+      if (vertical) return "󱚝 " + workingCount
+      return workingCount === 1 ? "󱚝 working" : ("󱚝 " + workingCount + " working")
+    }
+    if (failedCount > 0) {
+      if (vertical) return "󱚡 " + failedCount
+      return failedCount === 1 ? "󱚡 report failed" : ("󱚡 " + failedCount + " failed")
+    }
+    if (vertical) return "󰈙 " + unreadCount
+    return unreadCount === 1 ? "󰈙 report done" : ("󰈙 " + unreadCount + " reports done")
+  }
+
+  readonly property string agentTooltip: {
+    var i, job
+    if (workingCount > 0) {
+      for (i = 0; i < jobs.length; i++) {
+        if (jobs[i].status === "running") {
+          return workingCount === 1
+            ? "1 agent working: " + jobs[i].subject
+            : workingCount + " agents working, oldest: " + jobs[i].subject
+        }
+      }
+    }
+    if (failedCount > 0) {
+      for (i = 0; i < jobs.length; i++) {
+        job = jobs[i]
+        if (job.status !== "running" && job.status !== "done" && job.read === false) {
+          var lead = failedCount === 1 ? "Click for the log: " : (failedCount + " failed — click for the newest: ")
+          return lead + job.subject
+        }
+      }
+    }
+    for (i = 0; i < jobs.length; i++) {
+      job = jobs[i]
+      if (job.status === "done" && job.read === false && job.report) {
+        var head = unreadCount === 1 ? "Click to read: " : (unreadCount + " reports — click for the newest: ")
+        return head + job.subject
+      }
+    }
+    return ""
+  }
+
+  function refreshInvestigations() {
+    listProc.running = true
+  }
+
+  // The button's whole job, and the only route to the report panel: nothing
+  // opens it but a click here, the keybinding, or `omantra-investigate open`.
+  // A report landing must never take the screen off what you were doing — the
+  // bar says it is done and waits to be asked.
+  //
+  // Toggles, like every other gesture this widget has: the hand that opened the
+  // reports is already on the key that closes them.
+  function openReport(id) {
+    reportPanel.toggle(id || "")
+  }
 
   // The overlay understands exactly the phases the machine has, minus the two
   // that mean "nothing to show".
@@ -245,8 +363,8 @@ BarWidget {
     })
   }
 
-  implicitWidth: button.implicitWidth
-  implicitHeight: button.implicitHeight
+  implicitWidth: layout.implicitWidth
+  implicitHeight: layout.implicitHeight
 
   Timer {
     running: root.recording
@@ -304,6 +422,61 @@ BarWidget {
     screen: root.QsWindow.window ? root.QsWindow.window.screen : null
     configCommand: root.configCommand
     onSaved: configProc.running = true
+  }
+
+  // The store, as `omantra-investigate list --json` reports it. Started by the
+  // runner over IPC when a job starts or ends, which is why there is no fast
+  // poll — see the timer below for the one case that needs one.
+  Process {
+    id: listProc
+    running: true
+    command: [root.investigateCommand, "list", "--json"]
+    stdout: StdioCollector { waitForEnd: true }
+
+    onExited: function(exitCode) {
+      if (exitCode !== 0) return
+      try {
+        root.jobs = JSON.parse(String(listProc.stdout.text || "[]"))
+      } catch (e) {
+        // A widget that cannot read the store still records and still
+        // transcribes; it just stops claiming anything about agents.
+        console.warn("omantra: could not parse investigations: " + e)
+      }
+    }
+  }
+
+  // Where a landed investigation is read, on request and never otherwise. Fed
+  // from `jobs` rather than loading its own list, so the card is already
+  // populated the moment it opens.
+  ReportPanel {
+    id: reportPanel
+    screen: root.QsWindow.window ? root.QsWindow.window.screen : null
+    investigateCommand: root.investigateCommand
+    jobs: root.jobs
+
+    // A report that has actually been shown is a report that has been read.
+    // The stamp goes in the store, so every bar on every monitor drops the
+    // button off the same write.
+    onWasRead: function(id) {
+      readProc.command = [root.investigateCommand, "read", id]
+      readProc.running = true
+    }
+  }
+
+  Process {
+    id: readProc
+    onExited: function(exitCode) { root.refreshInvestigations() }
+  }
+
+  // The safety net, not the mechanism. The runner announces both ends of a job
+  // over IPC; this only covers the case where the shell was restarted while an
+  // agent was working, so it runs at a rate nobody would notice and only while
+  // something is actually running.
+  Timer {
+    running: root.workingCount > 0
+    interval: 30000
+    repeat: true
+    onTriggered: root.refreshInvestigations()
   }
 
   // The widget's copy of the settings the panel writes. Read once at startup
@@ -395,9 +568,13 @@ BarWidget {
 
       root.lastError = ""
       if (text === "") {
+        // No notification for this one. Silence is not a failure the machine
+        // has to survive being looked away from — you stopped the take a second
+        // ago and you are looking at the chip that says it, and a tray entry
+        // for "the mic heard nothing" is a dismissal to do later for news that
+        // was over on arrival.
         root.lastError = "No speech detected"
         root.settle("error")
-        if (root.notifyOnError) root.notify("Nothing to transcribe", "No speech detected")
         return
       }
 
@@ -463,27 +640,73 @@ BarWidget {
     function mode(): string { return root.mode }
     function last(): string { return root.lastText }
     function config(): void { root.openConfig() }
+
+    // The background half. `investigations` is what bin/omantra-investigate
+    // calls when a job starts and when it ends; it is broadcast because an IPC
+    // target routes to one handler while a bar exists per monitor, and a count
+    // that only updates on the screen the shell happened to pick is worse than
+    // no count.
+    function investigations(): void { root.broadcast("refreshInvestigations") }
+    // Two functions rather than one with an optional argument: an IPC call
+    // arrives with exactly the parameters the signature declares, so a
+    // `report(id)` a keybinding could call would have to pass an empty string.
+    function report(): void { root.openReport("") }
+    function reportFor(id: string): void { root.openReport(id) }
+    function unread(): string { return String(root.unreadCount) }
+    function investigating(): string { return String(root.workingCount) }
   }
 
-  WidgetButton {
-    id: button
+  // Two buttons rather than one with two meanings: the mic keeps all three of
+  // its click gestures, and the agent segment — which is only there when there
+  // is something to say — is a surface of its own next to it. A Grid rather
+  // than a Row because the bar can be vertical, and then they stack.
+  Grid {
+    id: layout
     anchors.fill: parent
-    bar: root.bar
-    // The clock only earns its space while it is counting; the rest of the
-    // time this is an icon widget like any other.
-    text: root.vertical || !root.recording ? root.glyph : root.glyph + " " + root.elapsedLabel
-    active: root.recording
-    tooltipText: root.statusText
-    horizontalMargin: 8.5
+    rows: root.vertical ? 2 : 1
+    columns: root.vertical ? 1 : 2
 
-    // One meaning per button per state, rather than three buttons and five
-    // meanings: left runs the take, right is the settings, and middle is
-    // whichever "undo" the current state has — throw this take away while the
-    // mic is hot, hand me the last transcript again when it isn't.
-    onPressed: function(b) {
-      if (b === Qt.RightButton) root.openConfig()
-      else if (b === Qt.MiddleButton) root.busy ? root.cancel() : root.recopy()
-      else root.toggle("dictate")
+    WidgetButton {
+      id: button
+      bar: root.bar
+      // The clock only earns its space while it is counting; the rest of the
+      // time this is an icon widget like any other.
+      text: root.vertical || !root.recording ? root.glyph : root.glyph + " " + root.elapsedLabel
+      active: root.recording
+      tooltipText: root.statusText
+      horizontalMargin: 8.5
+
+      // One meaning per button per state, rather than three buttons and five
+      // meanings: left runs the take, right is the settings, and middle is
+      // whichever "undo" the current state has — throw this take away while the
+      // mic is hot, hand me the last transcript again when it isn't.
+      onPressed: function(b) {
+        if (b === Qt.RightButton) root.openConfig()
+        else if (b === Qt.MiddleButton) root.busy ? root.cancel() : root.recopy()
+        else root.toggle("dictate")
+      }
+    }
+
+    // The whole ambient signal for the background half: a glyph and a count,
+    // present only while there is something to say and gone the moment there
+    // isn't. Accent while an agent is working or one of them failed, ordinary
+    // once what is left is reading — the colour is the difference between
+    // "this wants you" and "your turn, whenever".
+    WidgetButton {
+      id: agents
+      bar: root.bar
+      visible: root.showingAgents
+      hasVisualContent: root.showingAgents
+      text: root.agentLabel
+      active: root.workingCount > 0 || root.failedCount > 0
+      tooltipText: root.agentTooltip
+      horizontalMargin: 6
+
+      // One meaning, whichever button: open the newest report I have not read.
+      // While an agent is still working there is nothing to open, and the
+      // button is a status rather than a control — clicking it then opens the
+      // last finished report, which is the least surprising thing it could do.
+      onPressed: function(b) { root.openReport("") }
     }
   }
 }

@@ -84,7 +84,7 @@ fi
 
 say "Linking scripts into $LOCAL_BIN"
 mkdir -p "$LOCAL_BIN"
-for script in omantra omantra-config omantra-transcribe omantra-supertap; do
+for script in omantra omantra-config omantra-investigate omantra-serve omantra-transcribe omantra-supertap; do
   ln -sfn "$REPO/bin/$script" "$LOCAL_BIN/$script"
   echo "  $LOCAL_BIN/$script -> $REPO/bin/$script"
 done

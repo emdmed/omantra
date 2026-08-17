@@ -45,6 +45,18 @@ run() {
   "$@"
 }
 
+# run(), for a command that prints something of its own: this script's stdout is
+# the widget's `plan:` channel, so `omantra-investigate start` printing a job id
+# onto it would be a second thing to parse. Still one place that knows about
+# --dry-run, which is what run() is for.
+run_quiet() {
+  if [ "$dry_run" = 1 ]; then
+    printf 'would: %s\n' "$*"
+    return 0
+  fi
+  "$@" >/dev/null
+}
+
 # Only failures notify. Everything that went right is already on screen: the
 # chip under the bar is showing it, and a desktop notification for a theme
 # switch you can see happening is a second copy of the news. A failure is the
@@ -393,6 +405,29 @@ do_web_search() {
   url="${OMANTRA_SEARCH_URL//%s/$encoded}"
   plan "SEARCH" "$query"
   run setsid xdg-open "$url"
+}
+
+# The second action that leaves the machine, and the only one that takes
+# minutes: the subject goes to a coding agent running headless in the
+# background, and a markdown report comes back to the panel in the bar. Nothing
+# opens, nothing takes focus — see bin/omantra-investigate.
+#
+# The origin is passed rather than inherited because this script runs with the
+# bar's cwd, which is not a project: it is what the agent is allowed to read
+# besides its own job directory, so "look into why our transcribe step is slow"
+# has somewhere to look.
+#
+# shellcheck disable=SC2154  # $topic is a FIELDS row, filled by the slot loop.
+do_investigate() {
+  [ -z "$topic" ] && die "nothing to investigate in: $transcript"
+  command -v omantra-investigate >/dev/null \
+    || die "omantra-investigate is not on PATH — re-run install.sh"
+
+  plan "INVESTIGATING" "$topic"
+  # The runner returns as soon as the agent is started, so this is not the wait
+  # it looks like; the widget's chip is free a moment later.
+  run_quiet env OMANTRA_INVESTIGATION_ORIGIN="$OMANTRA_PROJECTS" \
+    omantra-investigate start "$topic"
 }
 
 # Not understood is not a failure — hand the words back so the take is not

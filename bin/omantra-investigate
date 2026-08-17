@@ -1,0 +1,364 @@
+#!/usr/bin/env bash
+# Hand a subject to a coding agent running in the background, and collect the
+# markdown report it comes back with.
+#
+#   omantra-investigate start "how sherpa-onnx handles endpointing"
+#   omantra-investigate list
+#   omantra-investigate show            # the newest report, on stdout
+#
+# The point of the thing is that nothing appears on screen: no terminal to
+# babysit, no window taking focus. While it runs, the only sign is a segment in
+# the bar; when it lands, the report is read in the panel or from here.
+#
+# Same shape as omantra-config: the GUI is a front-end for exactly these
+# commands, so everything the panel can do is doable from a terminal and over
+# ssh, and there is one implementation rather than one per front-end.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+. "$ROOT/lib/config.sh"
+. "$ROOT/lib/project.sh"
+. "$ROOT/lib/investigate.sh"
+
+die() { echo "omantra-investigate: $1" >&2; exit 1; }
+
+usage() {
+  cat <<EOF
+usage: omantra-investigate <command> [args]
+
+  start <subject...>    start an investigation in the background, print its id
+  list [--json]         every investigation, newest first, with its status
+  show [<id>]           the report on stdout (default: the newest)
+  log [<id>]            what the agent said on stderr
+  path [<id>]           the job directory
+  cancel [<id>]         stop a running investigation
+  read [<id>]           mark a report read, or every landed one
+  open [<id>]           show a report in the bar's panel (default: newest unread)
+
+Reports live in $OMANTRA_INVESTIGATIONS
+The agent is $OMANTRA_INVESTIGATOR, allowed: $OMANTRA_INVESTIGATION_TOOLS
+Nothing here opens a window by itself; 'open' is how a report is put on screen.
+EOF
+}
+
+# ---- The brief --------------------------------------------------------------
+#
+# The panel renders this as markdown, so the shape of the answer is part of the
+# contract rather than a preference. The verdict goes first because a report you
+# have to read to the end to use is one you will not open twice.
+REPORT_STYLE="$(cat <<'EOF'
+You are answering a question in the background. Nobody is watching you work and
+there is no way to ask a follow-up question, so answer the question that was
+asked as completely as the evidence allows, and say plainly where the evidence
+ran out.
+
+Reply with a markdown document and nothing else — no preamble, no sign-off, no
+offer to continue. Its shape:
+
+# A title naming the subject
+
+Two or three sentences answering the question outright, before any detail.
+
+## The findings
+
+Sections as the subject needs them. Prefer specifics — versions, numbers, file
+paths, quoted text — over summary, and say when something is your inference
+rather than something you read.
+
+## What I could not settle
+
+Anything you looked for and did not find, so the reader knows the shape of the
+hole. Omit the section if there isn't one.
+
+## Sources
+
+Links, with a few words each on what they are.
+EOF
+)"
+
+# ---- meta.json --------------------------------------------------------------
+
+# Read-modify-write through a temp file: the widget lists this store on a timer,
+# and a half-written meta.json is a job that disappears from the bar for a beat.
+meta_set() {
+  local dir="$1"; shift
+  local tmp
+  tmp="$(mktemp "$dir/meta.json.XXXXXX")"
+  jq "$@" "$dir/meta.json" > "$tmp"
+  mv "$tmp" "$dir/meta.json"
+}
+
+resolve() {
+  local id="${1:-}"
+  [ -z "$id" ] && { id="$(latest_job)" || die "no investigations yet"; }
+  local dir
+  dir="$(job_dir "$id")" || die "not an investigation id: $id"
+  [ -d "$dir" ] || die "no such investigation: $id"
+  printf '%s' "$dir"
+}
+
+# The bar is told rather than asked. A poll fast enough to feel immediate is a
+# poll running all day for the ninety-nine per cent of it when nothing is
+# happening, so the widget's timer is only the safety net and this is the news.
+#
+# The return value matters at the end of a job: non-zero means there is no bar
+# on this machine to carry the news, which is the only case a notification is
+# for. This script has to work from a terminal on a machine where the shell was
+# never started, and that is the terminal it has to speak to.
+ping_widget() {
+  command -v omarchy-shell >/dev/null || return 1
+  omarchy-shell omantra investigations >/dev/null 2>&1
+}
+
+notify() {
+  command -v notify-send >/dev/null || return 0
+  notify-send --app-name=Omantra --icon=utilities-terminal "$1" "${2:-}" || true
+}
+
+# ---- start ------------------------------------------------------------------
+
+cmd_start() {
+  local subject="$*" id dir origin waited
+
+  subject="$(printf '%s' "$subject" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
+  [ -z "$subject" ] && die "nothing to investigate"
+  command -v "$OMANTRA_INVESTIGATOR" >/dev/null \
+    || die "$OMANTRA_INVESTIGATOR is not on PATH — set OMANTRA_INVESTIGATOR to the agent you have"
+
+  # Where the agent may read from, beyond its own job directory: the directory
+  # this was run in when that is a real one, so "look into why our transcribe
+  # step is slow" can read the project you asked it from. Voice-triggered runs
+  # arrive with the bar's cwd, which is why bin/omantra passes an origin.
+  origin="${OMANTRA_INVESTIGATION_ORIGIN:-$PWD}"
+  [ -d "$origin" ] || origin="$OMANTRA_PROJECTS"
+
+  id="$(job_id "$subject")"
+  dir="$OMANTRA_INVESTIGATIONS/$id"
+  # An id collides only when two investigations start inside the same second
+  # with the same subject, at which point they are the same request twice.
+  mkdir -p "$dir"
+
+  jq -n --arg id "$id" --arg subject "$subject" --arg origin "$origin" \
+        --argjson started "$(date +%s)" \
+        '{id: $id, subject: $subject, origin: $origin, started: $started}' \
+    > "$dir/meta.json"
+  : > "$dir/report.md"
+  : > "$dir/log"
+
+  # Detached and in its own session, so the agent outlives this script, the
+  # terminal that ran it, and the widget process that may be tracking it. The
+  # pipes are closed for the same reason bin/omantra closes them when it opens a
+  # terminal: the widget's collector waits for EOF on stdout, and a child
+  # holding it open for four minutes is a widget stuck on "interpreting".
+  setsid "$0" __run "$id" >/dev/null 2>&1 </dev/null &
+  disown 2>/dev/null || true
+
+  # The child stamps its own pid, and until it has, the job has no way to be
+  # told from an abandoned one. Waiting for it here — rather than teaching
+  # job_status a grace period — keeps "is it running?" a question about a
+  # process rather than about a clock.
+  waited=0
+  while [ "$waited" -lt 40 ]; do
+    [ -n "$(jq -r '.pid // ""' "$dir/meta.json" 2>/dev/null)" ] && break
+    sleep 0.05
+    waited=$((waited + 1))
+  done
+
+  ping_widget || true
+  printf '%s\n' "$id"
+}
+
+# The background half. Not in the usage: it is the second half of `start`,
+# reached only by the fork above.
+cmd_run() {
+  local id="$1" dir code status
+  dir="$OMANTRA_INVESTIGATIONS/$id"
+  [ -d "$dir" ] || exit 1
+
+  # shellcheck disable=SC2016  # $pid is jq's variable, passed by --argjson.
+  meta_set "$dir" --argjson pid "$$" '. + {pid: $pid}'
+
+  local subject origin
+  subject="$(jq -r '.subject' "$dir/meta.json")"
+  origin="$(jq -r '.origin' "$dir/meta.json")"
+
+  # cwd is the job directory, so anything the agent does write lands where it
+  # belongs rather than wherever the bar happened to be started from.
+  cd "$dir"
+
+  # `set +e` around the one command whose failure is data: an agent that times
+  # out or refuses still has a log worth keeping, and dying here would leave the
+  # job forever "running".
+  set +e
+  timeout "$OMANTRA_INVESTIGATION_TIMEOUT" \
+    "$OMANTRA_INVESTIGATOR" -p "$subject" \
+      --output-format text \
+      --allowedTools "$OMANTRA_INVESTIGATION_TOOLS" \
+      --add-dir "$origin" \
+      --append-system-prompt "$REPORT_STYLE" \
+    > "$dir/report.md" 2> "$dir/log"
+  code=$?
+  set -e
+
+  # An agent that exits 0 having said nothing is a failure the exit code does
+  # not report — and an empty report panel is the least useful way to find out.
+  if [ "$code" = 0 ] && [ ! -s "$dir/report.md" ]; then
+    code=1
+    echo "the agent exited 0 without writing a report" >> "$dir/log"
+  fi
+
+  # shellcheck disable=SC2016  # as above: jq's variables, not the shell's.
+  meta_set "$dir" --argjson finished "$(date +%s)" --argjson exit "$code" \
+    '. + {finished: $finished, exit: $exit}'
+
+  prune_jobs
+
+  # Both endings live in the bar, and neither of them expires: "report done" or
+  # "report failed" sits in the layout until it is opened, which is the whole
+  # reason an investigation does not need to interrupt anyone to land. So the
+  # bar is told first, and a notification only happens when there was no bar to
+  # tell — a run started from a terminal on a machine with no shell up, where
+  # the alternative is silence.
+  if ping_widget; then
+    exit 0
+  fi
+
+  [ "$OMANTRA_NOTIFY" = true ] || exit 0
+  status="$(job_status "$dir")"
+  if [ "$status" = "done" ]; then
+    notify "Investigation ready" "$subject"
+  else
+    notify "Investigation failed" "$subject"
+  fi
+  exit 0
+}
+
+# ---- reading ----------------------------------------------------------------
+
+cmd_list() {
+  local json
+  json="$(jobs_json)"
+
+  if [ "${1:-}" = "--json" ]; then
+    printf '%s\n' "$json"
+    return
+  fi
+
+  [ "$(jq 'length' <<<"$json")" = 0 ] && { echo "no investigations yet"; return; }
+
+  jq -r '.[] | [(if .status == "done" and .read == false then "unread" else .status end),
+                .id, .subject] | @tsv' <<<"$json" \
+    | while IFS=$'\t' read -r status id subject; do
+        printf '%-10s %-40s %s\n' "$status" "$id" "$subject"
+      done
+}
+
+cmd_show() {
+  local dir
+  dir="$(resolve "${1:-}")"
+  [ -s "$dir/report.md" ] || die "no report yet: $(basename "$dir") is $(job_status "$dir")"
+  cat "$dir/report.md"
+}
+
+cmd_log() {
+  local dir
+  dir="$(resolve "${1:-}")"
+  [ -f "$dir/log" ] || die "no log for $(basename "$dir")"
+  cat "$dir/log"
+}
+
+# ---- unread -----------------------------------------------------------------
+#
+# A `read` stamp in each job's own meta.json, rather than one "everything up to
+# here" timestamp for the store. Three reports land while you are out; you open
+# the interesting one; the other two are still unread, and the bar still says
+# so. A single watermark cannot express that.
+
+# Stamp one job, or every landed job when given nothing.
+cmd_read() {
+  local id dir
+  if [ -n "${1:-}" ]; then
+    dir="$(resolve "$1")"
+    # shellcheck disable=SC2016  # $read is jq's variable, passed by --argjson.
+    meta_set "$dir" --argjson read "$(date +%s)" '. + {read: $read}'
+  else
+    while IFS= read -r id; do
+      [ -z "$id" ] && continue
+      dir="$OMANTRA_INVESTIGATIONS/$id"
+      # shellcheck disable=SC2016  # as above.
+      meta_set "$dir" --argjson read "$(date +%s)" '. + {read: $read}'
+    done < <(jobs_json | jq -r '.[] | select(.status != "running" and .read == false) | .id')
+  fi
+  ping_widget || true
+}
+
+# ---- stopping ---------------------------------------------------------------
+
+cmd_cancel() {
+  local dir pid
+  dir="$(resolve "${1:-}")"
+  [ "$(job_status "$dir")" = "running" ] || die "$(basename "$dir") is not running"
+
+  pid="$(jq -r '.pid // ""' "$dir/meta.json")"
+  [ -n "$pid" ] || die "no pid recorded for $(basename "$dir")"
+
+  # The whole session, not just the bash wrapper: `start` gave the job its own
+  # process group precisely so the agent and the timeout around it can be ended
+  # together.
+  kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+
+  # Stamped here rather than from a trap in the child, because the child may
+  # already be gone — SIGKILL runs no traps, and a job left with no `finished`
+  # would read as abandoned, which is a different and less true story.
+  # shellcheck disable=SC2016  # as above.
+  meta_set "$dir" --argjson finished "$(date +%s)" '. + {finished: $finished, exit: 143}'
+  ping_widget || true
+  echo "cancelled $(basename "$dir")"
+}
+
+# ---- opening ----------------------------------------------------------------
+#
+# The report is read in the panel in the bar, which opens for this and for
+# nothing else — a report landing while you are mid-sentence must never take the
+# screen, so the bar says it is done and waits to be asked. This is the terminal
+# way of asking, and what the "report done" button and Super+Alt+R both run.
+#
+# With no id the panel opens on the newest report nobody has looked at, falling
+# back to the newest of any kind.
+cmd_open() {
+  local id
+
+  id="${1:-}"
+  if [ -z "$id" ]; then
+    id="$(newest_unread)" || id="$(latest_job)" || die "no investigations yet"
+  fi
+  # Resolved before the call rather than after it, so a bad id fails with a
+  # message here instead of opening an empty card on the other side of the IPC.
+  resolve "$id" >/dev/null
+
+  command -v omarchy-shell >/dev/null \
+    || die "omarchy-shell is not on PATH — the report panel lives in the bar; 'omantra-investigate show' prints the markdown instead"
+
+  omarchy-shell omantra reportFor "$id"
+}
+
+# ---- Entry point ------------------------------------------------------------
+
+mkdir -p "$OMANTRA_INVESTIGATIONS"
+
+command_name="${1:-}"
+[ $# -gt 0 ] && shift
+
+case "$command_name" in
+  start)  cmd_start "$@" ;;
+  list)   cmd_list "$@" ;;
+  show)   cmd_show "${1:-}" ;;
+  log)    cmd_log "${1:-}" ;;
+  path)   resolve "${1:-}"; echo ;;
+  cancel) cmd_cancel "${1:-}" ;;
+  read)   cmd_read "${1:-}" ;;
+  open)   cmd_open "${1:-}" ;;
+  __run)  cmd_run "$1" ;;
+  ""|-h|--help|help) usage ;;
+  *)      usage >&2; die "unknown command: $command_name" ;;
+esac
