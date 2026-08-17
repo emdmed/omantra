@@ -45,7 +45,7 @@ FIELDS=(
   "direction|enum:louder,quieter|louder when the instruction asks for more sound, quieter when it asks for less."
   "level|integer:0:100|the percentage the sound should end up at — \"forty percent\" is 40, \"half\" is 50, \"all the way up\" is 100."
   "query|string|what to look up, phrased as it would be typed into a search box."
-  "topic|string|the question to research, written out as a full question or instruction rather than as keywords — \"how does sherpa-onnx decide where a sentence ends\", \"compare Parakeet and Whisper on CPU\". Keep the user's own subject; do not narrow it."
+  "topic|string|the question to research, written out as a full question or instruction rather than as keywords. The subject has to be the one the user named: copy their subject over whatever it is, and do not narrow it, generalise it, or replace it with a subject of your own. No examples are given here on purpose — a model shown one tends to research it."
 )
 
 # ---- Actions ----------------------------------------------------------------
@@ -242,4 +242,36 @@ sanitise_field() {
       return 1
       ;;
   esac
+}
+
+# The check `topic` needs and no schema can do for it.
+#
+# Every other slot is checked against something: a slug is re-slugified, a
+# number has a range, an enum has members. `topic` is free text handed to an
+# agent that will read for three minutes on the strength of it, and the one way
+# it goes wrong is the one a schema cannot see — a fluent, well-formed question
+# about a subject the user never mentioned. It happened with an example in the
+# field description, which a small model researched instead of listening; the
+# examples are gone, but the failure mode is the model's, not the wording's.
+#
+# So the transcript gets a vote. A rewording of what was said shares a word of
+# substance with it; a question about something else does not. Words of three
+# letters or fewer are ignored on both sides, since "how" and "the" match
+# everything and would wave the wrong subject straight through.
+#
+# Prints the topic to use: the model's when it is grounded in what was said,
+# the transcript itself when it isn't. Handing the agent "look into react"
+# unedited is a worse question about the right subject, which is the trade this
+# makes every time it fires.
+grounded_topic() {
+  local topic="$1" said="$2" word said_words
+  said_words=" $(printf '%s' "$said" | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]' ' ') "
+  # shellcheck disable=SC2013  # word splitting is the point: one word per pass.
+  for word in $(printf '%s' "$topic" | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]' ' '); do
+    [ "${#word}" -ge 4 ] || continue
+    case "$said_words" in
+      *" $word "*) printf '%s' "$topic"; return 0 ;;
+    esac
+  done
+  printf '%s' "$said"
 }

@@ -154,6 +154,46 @@ assert_eq "$(field_keys | tr '\n' ' ' | sed 's/ $//')" \
   "$(used_fields | tr '\n' ' ' | sed 's/ $//')" \
   "every field in the table is used by some action, in table order"
 
+# ---- A researched topic has to be the one that was said ---------------------
+#
+# The regression is real: an example sentence in the `topic` description came
+# back as the topic, and an agent spent three minutes on sherpa-onnx for someone
+# who had asked about React.
+
+echo
+echo "grounded_topic keeps the subject the user named"
+
+assert_eq "how does React decide when to re-render" \
+  "$(grounded_topic "how does React decide when to re-render" "look into react")" \
+  "a rewording of what was said is kept"
+
+assert_eq "look into react" \
+  "$(grounded_topic "how does sherpa-onnx decide where a sentence ends" "look into react")" \
+  "a topic sharing nothing with the transcript loses to the transcript"
+
+assert_eq "compare Parakeet and Whisper on CPU" \
+  "$(grounded_topic "compare Parakeet and Whisper on CPU" "find out whether parakeet beats whisper")" \
+  "one shared word of substance is enough"
+
+# The conservative half of the trade, stated as a test so it stays deliberate:
+# a subject of three letters cannot ground a rephrasing, so the transcript wins
+# and the agent gets a clumsier question about the right thing.
+assert_eq "look into vue" \
+  "$(grounded_topic "how does Vue track dependencies" "look into vue")" \
+  "a short subject alone does not ground a rewording — the transcript wins"
+
+assert_eq "look into ripgrep's memory maps" \
+  "$(grounded_topic "" "look into ripgrep's memory maps")" \
+  "an empty topic falls back to the transcript rather than to nothing"
+
+assert_eq "why is RIPGREP slow on NFS" \
+  "$(grounded_topic "why is RIPGREP slow on NFS" "look into ripgrep on nfs")" \
+  "matching ignores case"
+
+assert_eq "look into the bar; rm -rf ~" \
+  "$(grounded_topic "" "look into the bar; rm -rf ~")" \
+  "a transcript is carried as text, never as a pattern or a command"
+
 # ---- The dispatch has a function for every row ------------------------------
 #
 # A row added here without its do_ function falls through to do_unknown, which

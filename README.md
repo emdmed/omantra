@@ -411,8 +411,13 @@ omantra "look into how sherpa-onnx decides where a sentence ends"
 ```
 
 The subject goes to a coding agent — `claude` unless you change it — running
-headless in the background. Nothing opens, nothing takes focus, and the only
-sign it is happening is a segment that appears in the bar next to the mic:
+headless in the background. It is the model's rewording of what you said, which
+is the one slot where a rewording can be fluent, well-formed and about something
+else entirely; `grounded_topic` in `lib/actions.sh` makes it earn that by sharing
+a word of substance with the transcript, and hands the agent your own words when
+it doesn't. A clumsier question about the right subject beats three minutes spent
+on the wrong one. Nothing opens, nothing takes focus, and the only sign it is
+happening is a segment that appears in the bar next to the mic:
 
 ```
 󰗋   󱚝 working          an agent is out reading — hover for the subject

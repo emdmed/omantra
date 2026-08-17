@@ -419,15 +419,20 @@ do_web_search() {
 #
 # shellcheck disable=SC2154  # $topic is a FIELDS row, filled by the slot loop.
 do_investigate() {
-  [ -z "$topic" ] && die "nothing to investigate in: $transcript"
+  local subject
+  # What was said outranks how the model rephrased it — see grounded_topic in
+  # lib/actions.sh. This is the only action that spends minutes on the strength
+  # of a free-text slot, so it is the only one that pays to check.
+  subject="$(grounded_topic "$topic" "$transcript")"
+  [ -z "$subject" ] && die "nothing to investigate in: $transcript"
   command -v omantra-investigate >/dev/null \
     || die "omantra-investigate is not on PATH — re-run install.sh"
 
-  plan "INVESTIGATING" "$topic"
+  plan "INVESTIGATING" "$subject"
   # The runner returns as soon as the agent is started, so this is not the wait
   # it looks like; the widget's chip is free a moment later.
   run_quiet env OMANTRA_INVESTIGATION_ORIGIN="$OMANTRA_PROJECTS" \
-    omantra-investigate start "$topic"
+    omantra-investigate start "$subject"
 }
 
 # Not understood is not a failure — hand the words back so the take is not
