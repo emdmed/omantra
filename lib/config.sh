@@ -99,6 +99,29 @@ omantra_load_config
 
 # SHERPA_VERSION is honoured for compatibility with the documented override.
 OMANTRA_SHERPA_VERSION="${OMANTRA_SHERPA_VERSION:-${SHERPA_VERSION:-1.13.5}}"
+
+# The digest of the release archive that version names, and the one thing
+# standing between "a URL on someone else's repository" and "a binary this runs
+# on your machine". GitHub release assets are mutable, so the URL is not a
+# promise about the bytes; this is. Bumping the version above means fetching the
+# new digest from the release — GitHub publishes one per asset:
+#
+#   curl -s https://api.github.com/repos/k2-fsa/sherpa-onnx/releases/tags/vX.Y.Z |
+#     jq -r '.assets[] | select(.name | endswith("linux-x64-static.tar.bz2")) | .digest'
+#
+# A version with no digest recorded here is not a thing omantra-fetch will
+# download: it stops and asks for one, which can be given as
+# OMANTRA_SHERPA_SHA256 for a build of your own.
+if [ -z "${OMANTRA_SHERPA_SHA256:-}" ]; then
+  case "$OMANTRA_SHERPA_VERSION" in
+    1.13.5) OMANTRA_SHERPA_SHA256=4787149dad1a3f9a2d78d0aaacff054d9bc6f775f858a4dc389cec353e560985 ;;
+    *)      OMANTRA_SHERPA_SHA256="" ;;
+  esac
+fi
+
+# Same for the VAD, which is a bare .onnx on the same mutable asr-models tag.
+OMANTRA_VAD_SHA256="${OMANTRA_VAD_SHA256:-9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6}"
+
 OMANTRA_SHERPA_DIR="${OMANTRA_SHERPA_DIR:-$OMANTRA_OPT_DIR/sherpa-onnx-v$OMANTRA_SHERPA_VERSION-linux-x64-static}"
 OMANTRA_SHERPA_BIN="${OMANTRA_SHERPA_BIN:-$OMANTRA_SHERPA_DIR/bin}"
 

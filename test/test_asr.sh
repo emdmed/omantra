@@ -54,6 +54,26 @@ $d/tiny.en-decoder.int8.onnx
 $d/tiny.en-tokens.txt" "$(asr_files whisper-tiny.en)" "every path in the flags is a file to check for"
 assert_eq "4" "$(asr_files parakeet-v2 | wc -l)" "--model-type is a switch, not a file"
 
+# ---- every row carries a digest ---------------------------------------------
+#
+# A row without one is not a model this can install: the archive is fetched from
+# a mutable release asset and unpacked next to a binary that gets executed, so
+# the digest is the row's load-bearing column rather than a nicety. Checked for
+# every profile, because the one that gets forgotten is the one added last.
+for id in $(asr_ids); do
+  digest="$(asr_sha256 "$id")"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] && ok=yes || ok=no
+  assert_eq "yes" "$ok" "$id pins a 64-hex sha256"
+done
+
+# The note is still the note, which is the thing a shifted column would break
+# silently — the panel would offer digests as descriptions.
+case "$(asr_note parakeet-v2)" in
+  *"English only"*) pass "the note column survived the digest column" ;;
+  *) fail "the note column survived the digest column" ;;
+esac
+TESTS_RUN=$((TESTS_RUN + 1))
+
 # ---- readiness -------------------------------------------------------------
 
 assert_fails "an empty models dir is not ready" asr_ready parakeet-v2

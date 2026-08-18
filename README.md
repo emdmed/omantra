@@ -76,6 +76,21 @@ until you ask: `omantra-fetch` pulls sherpa-onnx into `~/opt` and Parakeet into
 `~/models/asr`, printing a progress bar, and re-running it repairs a download
 that died halfway rather than starting over.
 
+Every one of those downloads is checked against a SHA-256 recorded in this
+repo before anything is unpacked — the digests are in `lib/asr.sh` for the
+models and `lib/config.sh` for sherpa-onnx and the VAD. They come from GitHub's
+published asset digests. This is not a formality: they are release assets on a
+repository nobody here controls, a release asset can be replaced without its
+URL changing, and the sherpa-onnx archive is the binary that runs on every
+transcription. A file whose digest does not match is deleted and nothing is
+installed, so the failure is a message rather than a program you did not
+choose. A sherpa-onnx version with no digest recorded is refused for the same
+reason; building your own means saying which bytes you expect:
+
+```bash
+OMANTRA_SHERPA_VERSION=1.14.0 OMANTRA_SHERPA_SHA256=<sha256> omantra-fetch
+```
+
 Skip it and the plugin still installs, still holds its place in the bar, and
 still opens its settings — the widget shows a download glyph and says the
 runtime is missing, and clicking it opens a terminal running `omantra-fetch`.
@@ -295,7 +310,7 @@ the decoder.
 So the unit is a profile — a row in `lib/asr.sh`:
 
 ```
-id | family | directory (= archive name) | precision | stem | note
+id | family | directory (= archive name) | precision | stem | sha256 | note
 ```
 
 and one function per family turns a row into flags. Everything else reads that:
@@ -303,8 +318,9 @@ and one function per family turns a row into flags. Everything else reads that:
 the download URL and — this is the part worth having — derives *which files
 must exist* from the same flags it would pass. The check and the command cannot
 describe different files, so nothing can report a model as installed that the
-decoder then fails to open. `omantra-fetch` also verifies the archive unpacked
-to the names the row predicted, and says which it expected when it didn't.
+decoder then fails to open. `omantra-fetch` verifies the archive against the
+row's `sha256` before unpacking it, then verifies it unpacked to the names the
+row predicted, and says which it expected when it didn't.
 
 Shipped:
 
@@ -317,7 +333,9 @@ Shipped:
 Adding one from the [sherpa releases
 page](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) is a row,
 if its family is already there — and a row plus a `case` branch in `asr_args`
-if it isn't. `test/test_asr.sh` covers both families without a model, a desktop
+if it isn't. The row's `sha256` is not optional and there is no mode that skips
+it: take it from the release's published asset digest, or hash the archive
+once and record what came back. `test/test_asr.sh` covers both families without a model, a desktop
 or a network.
 
 A model this doesn't know how to run at all is still reachable from the other
@@ -696,4 +714,4 @@ MIT — see [LICENSE](LICENSE). The speech runtime it downloads is not covered b
 that: [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) is Apache-2.0, and
 the Parakeet and Whisper models carry their own terms from the people who
 trained them. `omantra-fetch` downloads them from the sherpa-onnx releases page
-at your request and nothing is bundled here.
+at your request, against digests pinned here, and nothing is bundled.

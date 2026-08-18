@@ -13,18 +13,27 @@
 # the sherpa releases page is a row; adding a family sherpa supports and this
 # does not is a row and a case branch.
 #
-#   id | family | directory (= archive name) | precision | stem | note
+#   id | family | directory (= archive name) | precision | stem | sha256 | note
 #
 # `precision` is int8 or fp32, and picks the `.int8.onnx` files out of an
 # archive that ships both. `stem` is the per-file prefix Whisper-style archives
 # use and everything else leaves empty.
 #
+# `sha256` is the archive's digest, and it is not optional. These downloads are
+# release assets on a repository we do not control, and a release asset is
+# mutable — the same URL can be made to serve different bytes tomorrow, and
+# those bytes are unpacked next to a binary this then executes. Pinning the
+# digest here is what makes "the model the row describes" a fact rather than a
+# hope, so adding a row means fetching the archive once and recording what came
+# back. The digests below are GitHub's own published asset digests, except
+# whisper-tiny.en, which predates that field and was hashed from the download.
+#
 # Sourced by lib/config.sh, which is sourced by everything.
 
 OMANTRA_ASR_PROFILES=(
-  "parakeet-v2|transducer|sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8|int8||English only, ~660 MB. The default: fastest of these on a CPU."
-  "parakeet-v3|transducer|sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8|int8||25 European languages, ~464 MB."
-  "whisper-tiny.en|whisper|sherpa-onnx-whisper-tiny.en|int8|tiny.en|English only, ~112 MB. Small and quick, and noticeably less accurate."
+  "parakeet-v2|transducer|sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8|int8||157c157bc51155e03e37d2466522a3a737dd9c72bb25f36eb18912964161e1ad|English only, ~660 MB. The default: fastest of these on a CPU."
+  "parakeet-v3|transducer|sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8|int8||5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf|25 European languages, ~464 MB."
+  "whisper-tiny.en|whisper|sherpa-onnx-whisper-tiny.en|int8|tiny.en|2bd6cf965c8bb3e068ef9fa2191387ee63a9dfa2a4e37582a8109641c20005dd|English only, ~112 MB. Small and quick, and noticeably less accurate."
 )
 
 # The row for a profile id, or nothing. Every accessor below goes through this,
@@ -53,7 +62,8 @@ asr_family()    { asr_field 2 "$1"; }
 asr_dirname()   { asr_field 3 "$1"; }
 asr_precision() { asr_field 4 "$1"; }
 asr_stem()      { asr_field 5 "$1"; }
-asr_note()      { asr_field 6 "$1"; }
+asr_sha256()    { asr_field 6 "$1"; }
+asr_note()      { asr_field 7 "$1"; }
 
 asr_url() {
   printf '%s/asr-models/%s.tar.bz2' "$OMANTRA_RELEASES" "$(asr_dirname "$1")"
