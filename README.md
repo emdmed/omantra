@@ -689,3 +689,11 @@ libnotify xdg-terminal-exec` — `git` because `new_project` initialises a repo,
 `wpctl` (PipeWire) for the volume actions. `uwsm` or `gtk-launch` to start an
 application, whichever is present.
 Optional: `wtype` for the `typeOut` setting.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE). The speech runtime it downloads is not covered by
+that: [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) is Apache-2.0, and
+the Parakeet and Whisper models carry their own terms from the people who
+trained them. `omantra-fetch` downloads them from the sherpa-onnx releases page
+at your request and nothing is bundled here.
