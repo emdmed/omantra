@@ -229,12 +229,19 @@ PanelWindow {
   BorderSurface {
     id: card
 
+    // A window border is a literal pixel count — `border_size` in looknfeel.conf
+    // — so this edge is one too. The theme's `[popups] border-width` is 2 under
+    // most themes, which reads as a heavier frame than the windows the panel
+    // sits over, and `Style.space` would scale it further; matching the window
+    // manager means neither.
+    readonly property int edgeWidth: 1
+
     anchors.centerIn: parent
     width: Math.min(parent.width - Style.space(80), Style.space(1000))
     height: Math.min(parent.height - Style.space(80), Style.space(680))
     padding: Style.space(24)
     color: Util.alpha(Color.background, 0.98)
-    borderSpec: Border.surfaceSpec("popups", "border", Color.popups.border, Math.max(1, Style.space(2)))
+    borderSpec: Border.withWidth(Border.surfaceSpec("popups", "border", Color.popups.border, edgeWidth), edgeWidth)
     radius: Style.cornerRadius
 
     Column {

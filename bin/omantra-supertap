@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Double-tap detector for the Super key, driving enrique.omantra.
+# Double-tap detector for the Super key, driving io.github.emdmed.omantra.
 #
 # Hyprland can only tell us "Super was released"; the double-tap timing has to
 # live somewhere, so it lives here: each invocation either records the tap or,

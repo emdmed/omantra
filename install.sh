@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Install the speech-to-text runtime this plugin drives, then wire the plugin
-# into the Omarchy shell. Safe to re-run: every step is skipped when already
-# satisfied.
+# Wire the plugin into the shell and put its scripts on your PATH. Deliberately
+# small and fast: the ~1 GB of speech runtime is `omantra-fetch`, run when you
+# want it, so adding the plugin costs a second and a gigabyte is a decision you
+# make rather than one made for you. Safe to re-run: every step is skipped when
+# already satisfied.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,8 +12,9 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$REPO/lib/config.sh"
 
 LOCAL_BIN="$HOME/.local/bin"
-PLUGIN_ID="enrique.omantra"
-PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
+PLUGIN_ID="io.github.emdmed.omantra"
+PLUGINS_DIR="$HOME/.config/omarchy/plugins"
+PLUGIN_DIR="$PLUGINS_DIR/$PLUGIN_ID"
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
@@ -45,75 +48,73 @@ if ! omantra_endpoint_up; then
 EOF
 fi
 
-# ---- sherpa-onnx runtime ----------------------------------------------------
-
-if [ -x "$OMANTRA_SHERPA_BIN/sherpa-onnx-offline" ]; then
-  say "sherpa-onnx $OMANTRA_SHERPA_VERSION already installed"
-else
-  say "Installing sherpa-onnx $OMANTRA_SHERPA_VERSION (~400 MB download)"
-  mkdir -p "$OMANTRA_OPT_DIR"
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' EXIT
-  curl -fL --progress-bar \
-    -o "$tmp/sherpa.tar.bz2" \
-    "$OMANTRA_RELEASES/v$OMANTRA_SHERPA_VERSION/sherpa-onnx-v$OMANTRA_SHERPA_VERSION-linux-x64-static.tar.bz2"
-  tar xf "$tmp/sherpa.tar.bz2" -C "$OMANTRA_OPT_DIR"
-fi
-
-# ---- Parakeet model ---------------------------------------------------------
-
-if [ -f "$OMANTRA_MODEL/encoder.int8.onnx" ]; then
-  say "Parakeet model already installed"
-else
-  say "Installing $OMANTRA_MODEL_NAME (~660 MB)"
-  mkdir -p "$OMANTRA_MODELS_DIR"
-  curl -fL --progress-bar \
-    -o "$OMANTRA_MODELS_DIR/model.tar.bz2" \
-    "$OMANTRA_RELEASES/asr-models/$OMANTRA_MODEL_NAME.tar.bz2"
-  tar xf "$OMANTRA_MODELS_DIR/model.tar.bz2" -C "$OMANTRA_MODELS_DIR"
-  rm -f "$OMANTRA_MODELS_DIR/model.tar.bz2"
-fi
-
-if [ ! -f "$OMANTRA_MODELS_DIR/silero_vad.onnx" ]; then
-  say "Installing Silero VAD"
-  curl -fL --progress-bar -o "$OMANTRA_MODELS_DIR/silero_vad.onnx" \
-    "$OMANTRA_RELEASES/asr-models/silero_vad.onnx"
-fi
-
 # ---- CLI entry points -------------------------------------------------------
 
 say "Linking scripts into $LOCAL_BIN"
 mkdir -p "$LOCAL_BIN"
-for script in omantra omantra-config omantra-investigate omantra-serve omantra-transcribe omantra-supertap; do
+for script in omantra omantra-config omantra-fetch omantra-investigate omantra-serve omantra-transcribe omantra-supertap; do
   ln -sfn "$REPO/bin/$script" "$LOCAL_BIN/$script"
   echo "  $LOCAL_BIN/$script -> $REPO/bin/$script"
 done
 
 # ---- Shell plugin -----------------------------------------------------------
 
-# A symlink keeps the checkout as the single source of truth; the shell reads
-# through it and picks up edits without a copy step.
-if [ -e "$PLUGIN_DIR" ] && [ ! -L "$PLUGIN_DIR" ]; then
-  echo "$PLUGIN_DIR exists and is not a symlink — move it aside first" >&2
-  exit 1
+# Two ways in. `omarchy plugin add` has already cloned the repo to its final
+# home, and this is being run from inside it — there is nothing left to link,
+# and linking anything into a plugin folder would fail `omarchy plugin
+# validate`, which rejects symlinks. A development checkout somewhere else gets
+# the symlink instead, so edits are live without a copy step; that folder is a
+# symlink and so is deliberately not a shape you can publish from.
+if [ "$REPO" = "$(readlink -f "$PLUGIN_DIR" 2>/dev/null || echo "$PLUGIN_DIR")" ]; then
+  say "Installed as $PLUGIN_ID"
+else
+  # The pre-1.0 id, when the only install path was this script.
+  legacy="$PLUGINS_DIR/enrique.omantra"
+  if [ -L "$legacy" ]; then
+    say "Removing the old enrique.omantra link"
+    omarchy plugin disable enrique.omantra >/dev/null 2>&1 || true
+    rm -f "$legacy"
+  fi
+
+  if [ -e "$PLUGIN_DIR" ] && [ ! -L "$PLUGIN_DIR" ]; then
+    echo "$PLUGIN_DIR is already a real checkout — update it with:" >&2
+    echo "  omarchy plugin update $PLUGIN_ID" >&2
+    exit 1
+  fi
+  say "Linking this checkout into the Omarchy shell (development install)"
+  mkdir -p "$PLUGINS_DIR"
+  ln -sfn "$REPO" "$PLUGIN_DIR"
 fi
-say "Linking plugin into the Omarchy shell"
-mkdir -p "$(dirname "$PLUGIN_DIR")"
-ln -sfn "$REPO" "$PLUGIN_DIR"
 
 if command -v omarchy-shell >/dev/null; then
   omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
   omarchy plugin enable "$PLUGIN_ID" --section right >/dev/null 2>&1 || true
 fi
 
+say "Done"
+
+if "$REPO/bin/omantra-fetch" --check >/dev/null 2>&1; then
+  echo "Speech runtime is already downloaded."
+else
+  cat <<'EOF'
+Speech needs its runtime — about 1 GB of sherpa-onnx and Parakeet, downloaded
+when you ask for it and not before:
+
+  omantra-fetch
+
+Until then the widget sits in the bar saying so, and clicking it offers the
+download. Everything else — settings, the keybindings, command mode against a
+model server — is already wired up.
+EOF
+fi
+
 cat <<EOF
 
-$(say "Done")
 Add the keybindings from hypr/bindings.example.lua to ~/.config/hypr/bindings.lua,
 then run:  hyprctl reload && omarchy restart shell
 
 Verify with:
-  omantra-transcribe "$OMANTRA_MODEL/test_wavs/0.wav"
+  omantra-fetch --check
   omantra --dry-run "create a new project for a todo app"
   omantra-config list
   omarchy-shell omantra status

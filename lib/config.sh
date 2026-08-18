@@ -41,6 +41,7 @@ OMANTRA_SETTINGS=(
   "OMANTRA_ENDPOINT|url|-|Model server (OpenAI-compatible chat completions)"
   "OMANTRA_AGENT|command|-|Coding agent a project is opened with"
   "OMANTRA_PROJECTS|path|-|Where new projects are created"
+  "OMANTRA_ASR_PROFILE|enum|-|Speech model"
   "OMANTRA_THREADS|int:1:12|threads|Decoder threads"
   "OMANTRA_MAX_SECONDS|int:10:3600|maxSeconds|Max recording length (seconds)"
   "OMANTRA_COPY_CLIPBOARD|bool|copyToClipboard|Copy transcript to the clipboard"
@@ -101,7 +102,31 @@ OMANTRA_SHERPA_VERSION="${OMANTRA_SHERPA_VERSION:-${SHERPA_VERSION:-1.13.5}}"
 OMANTRA_SHERPA_DIR="${OMANTRA_SHERPA_DIR:-$OMANTRA_OPT_DIR/sherpa-onnx-v$OMANTRA_SHERPA_VERSION-linux-x64-static}"
 OMANTRA_SHERPA_BIN="${OMANTRA_SHERPA_BIN:-$OMANTRA_SHERPA_DIR/bin}"
 
-OMANTRA_MODEL_NAME="${OMANTRA_MODEL_NAME:-sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8}"
+# Which model, out of the table in lib/asr.sh. A profile is an id rather than a
+# path because a model is more than a directory — the family decides how
+# sherpa-onnx is invoked at all — and because a name is a thing the settings
+# panel and `omantra-fetch` can both offer as a choice.
+OMANTRA_ASR_PROFILE="${OMANTRA_ASR_PROFILE:-parakeet-v2}"
+
+# Whether OMANTRA_MODEL came from outside, recorded before the line below
+# derives one and makes the question unanswerable. It matters because the
+# override means "ignore the profile's directory, use mine" — and a derived
+# value that claimed the same would make every profile resolve to the current
+# profile's files, so `--list` would report models as downloaded that are not.
+OMANTRA_MODEL_EXPLICIT="${OMANTRA_MODEL:+1}"
+
+# shellcheck source=lib/asr.sh
+. "${BASH_SOURCE%/*}/asr.sh"
+
+if ! asr_row "$OMANTRA_ASR_PROFILE" >/dev/null; then
+  echo "omantra: unknown OMANTRA_ASR_PROFILE '$OMANTRA_ASR_PROFILE' — known: $(asr_ids | tr '\n' ' ')" >&2
+  OMANTRA_ASR_PROFILE=parakeet-v2
+fi
+
+# Kept because they are documented overrides and because the fetcher wants the
+# archive name. Both still win when set: OMANTRA_MODEL is read by asr_model_dir,
+# so pointing at a directory of your own outranks the profile that named it.
+OMANTRA_MODEL_NAME="${OMANTRA_MODEL_NAME:-$(asr_dirname "$OMANTRA_ASR_PROFILE")}"
 OMANTRA_MODEL="${OMANTRA_MODEL:-$OMANTRA_MODELS_DIR/$OMANTRA_MODEL_NAME}"
 
 # Regresses past 6 on the 6-core target machine — see the RTF table in README.

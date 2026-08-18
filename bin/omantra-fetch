@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# Download the speech-to-text runtime: sherpa-onnx, the Parakeet model, and the
+# Silero VAD. About 1 GB, which is why it is a command you run rather than
+# something `omarchy plugin add` does to you — the plugin installs in a second
+# and asks for the gigabyte the first time you try to speak.
+#
+# Usage:
+#   omantra-fetch                 download whatever the current profile needs
+#   omantra-fetch --check         say what is missing; exit 1 if anything is
+#   omantra-fetch --list          the models this knows how to fetch
+#   omantra-fetch <profile>       download a particular one, e.g. whisper-tiny.en
+#
+# Idempotent either way: a piece that is already on disk is skipped, so this is
+# also the repair command for a download that died halfway.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+. "$ROOT/lib/config.sh"
+
+check_only=false
+profile="$OMANTRA_ASR_PROFILE"
+
+case "${1:-}" in
+  --check) check_only=true ;;
+  --list)
+    # The note column is the whole point of the table being readable: the
+    # choice between these is size against languages against accuracy, and a
+    # bare list of ids answers none of that. `--json` is the same answer for
+    # the settings panel, which offers the same choice as a dropdown and needs
+    # to know which ones are already on disk.
+    if [ "${2:-}" = "--json" ]; then
+      while IFS= read -r id; do
+        jq -nc --arg id "$id" --arg note "$(asr_note "$id")" \
+          --argjson ready "$(asr_ready "$id" && echo true || echo false)" \
+          --argjson current "$([ "$id" = "$OMANTRA_ASR_PROFILE" ] && echo true || echo false)" \
+          '{id: $id, note: $note, ready: $ready, current: $current}'
+      done < <(asr_ids) | jq -sc .
+      exit 0
+    fi
+    while IFS= read -r id; do
+      printf '%-16s %-5s %s%s\n' "$id" \
+        "$(asr_ready "$id" && echo "have" || echo "-")" \
+        "$(asr_note "$id")" \
+        "$([ "$id" = "$OMANTRA_ASR_PROFILE" ] && printf '  [current]')"
+    done < <(asr_ids)
+    exit 0
+    ;;
+  -h|--help) sed -n '2,14p' "$0" | sed 's/^# \?//'; exit 0 ;;
+  "") ;;
+  -*) echo "usage: omantra-fetch [--check|--list|<profile>]" >&2; exit 1 ;;
+  *)
+    profile="$1"
+    asr_row "$profile" >/dev/null ||
+      { echo "omantra-fetch: unknown model '$profile' — try: omantra-fetch --list" >&2; exit 1; }
+    ;;
+esac
+
+# Downloading a profile is not switching to it: OMANTRA_ASR_PROFILE is a
+# setting, and a fetch that quietly rewrote it would make "let me try the small
+# one" a change to what the mic does tomorrow.
+if [ "$profile" != "$OMANTRA_ASR_PROFILE" ]; then
+  echo "Fetching $profile (the current model is $OMANTRA_ASR_PROFILE)."
+  echo "Switch with: omantra-config set OMANTRA_ASR_PROFILE $profile"
+fi
+
+say() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
+
+have_sherpa() { [ -x "$OMANTRA_SHERPA_BIN/sherpa-onnx-offline" ]; }
+have_model()  { asr_ready "$profile"; }
+have_vad()    { [ -f "$OMANTRA_MODELS_DIR/silero_vad.onnx" ]; }
+
+# Ready means "transcription would run": the two things omantra-transcribe
+# opens. The VAD is fetched alongside them but nothing here reads it yet, so a
+# missing one is worth mentioning and not worth calling the runtime broken over
+# — the widget asks this question to decide whether clicking the mic can work.
+if $check_only; then
+  missing=()
+  have_sherpa || missing+=("sherpa-onnx $OMANTRA_SHERPA_VERSION ($OMANTRA_SHERPA_DIR)")
+  have_model || missing+=("$profile ($(asr_model_dir "$profile"))")
+
+  if [ ${#missing[@]} -eq 0 ]; then
+    have_vad || echo "note: silero_vad.onnx is not downloaded (unused so far)"
+    echo "speech runtime installed"
+    exit 0
+  fi
+  printf 'missing:\n'
+  printf '  %s\n' "${missing[@]}"
+  echo "run: omantra-fetch"
+  exit 1
+fi
+
+# curl needs somewhere to put a partial download that is not the final path, or
+# an interrupted run leaves a truncated model that looks installed.
+tmp=""
+cleanup() { [ -n "$tmp" ] && rm -rf "$tmp"; }
+trap cleanup EXIT
+
+if have_sherpa; then
+  say "sherpa-onnx $OMANTRA_SHERPA_VERSION already installed"
+else
+  say "Downloading sherpa-onnx $OMANTRA_SHERPA_VERSION (~400 MB)"
+  mkdir -p "$OMANTRA_OPT_DIR"
+  tmp="$(mktemp -d)"
+  curl -fL --progress-bar \
+    -o "$tmp/sherpa.tar.bz2" \
+    "$OMANTRA_RELEASES/v$OMANTRA_SHERPA_VERSION/sherpa-onnx-v$OMANTRA_SHERPA_VERSION-linux-x64-static.tar.bz2"
+  tar xf "$tmp/sherpa.tar.bz2" -C "$OMANTRA_OPT_DIR"
+  rm -rf "$tmp"; tmp=""
+fi
+
+if have_model; then
+  say "$profile already installed"
+else
+  say "Downloading $profile — $(asr_note "$profile")"
+  mkdir -p "$OMANTRA_MODELS_DIR"
+  tmp="$(mktemp -d)"
+  curl -fL --progress-bar -o "$tmp/model.tar.bz2" "$(asr_url "$profile")"
+  tar xf "$tmp/model.tar.bz2" -C "$OMANTRA_MODELS_DIR"
+  rm -rf "$tmp"; tmp=""
+
+  # An archive that unpacked to names the table did not predict is a wrong row,
+  # and saying so here — with the file it expected — is the difference between
+  # a five-second fix and a mystery at the microphone.
+  if ! asr_ready "$profile"; then
+    echo "omantra-fetch: $profile unpacked, but not to the files this expects:" >&2
+    while IFS= read -r f; do
+      [ -f "$f" ] || echo "  missing: $f" >&2
+    done < <(asr_files "$profile")
+    echo "The row for $profile in lib/asr.sh does not match the archive." >&2
+    exit 1
+  fi
+fi
+
+if have_vad; then
+  say "Silero VAD already installed"
+else
+  say "Downloading Silero VAD"
+  mkdir -p "$OMANTRA_MODELS_DIR"
+  tmp="$(mktemp -d)"
+  curl -fL --progress-bar -o "$tmp/silero_vad.onnx" \
+    "$OMANTRA_RELEASES/asr-models/silero_vad.onnx"
+  mv "$tmp/silero_vad.onnx" "$OMANTRA_MODELS_DIR/silero_vad.onnx"
+  rm -rf "$tmp"; tmp=""
+fi
+
+say "Speech runtime ready"
+echo "Try it:  omantra-transcribe \"$(asr_model_dir "$profile")/test_wavs/0.wav\""
+
+# The widget polls `--check` while it waits, but telling it directly means the
+# bar stops saying "downloading" the moment this finishes rather than up to a
+# few seconds later.
+if command -v omarchy-shell >/dev/null 2>&1; then
+  omarchy-shell omantra checkRuntime >/dev/null 2>&1 || true
+fi

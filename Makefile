@@ -13,7 +13,7 @@ test:
 # runtime dependency.
 lint:
 	@if command -v shellcheck >/dev/null; then \
-	  shellcheck -x bin/* install.sh lib/*.sh test/*.sh hooks/pre-commit \
+	  shellcheck -x bin/* install.sh uninstall.sh lib/*.sh test/*.sh hooks/pre-commit \
 	    && echo "shellcheck: clean"; \
 	else \
 	  echo "shellcheck not installed — skipping (omarchy pkg add shellcheck)"; \

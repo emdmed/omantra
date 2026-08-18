@@ -75,6 +75,13 @@ validate() {
       # annoying failure of the two.
       command -v "$value" >/dev/null || echo "omantra-config: note: $value is not on PATH" >&2
       ;;
+    enum)
+      # The only setting whose valid values are a list the program knows and
+      # the user should not have to memorise, so a wrong one prints the list
+      # rather than just refusing.
+      asr_row "$value" >/dev/null ||
+        die "$key must be one of: $(asr_ids | tr '\n' ' ')— got: $value"
+      ;;
     path)
       [ -n "$value" ] || die "$key cannot be empty"
       # shellcheck disable=SC2088  # matching a literal tilde is the point:

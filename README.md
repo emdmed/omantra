@@ -43,23 +43,55 @@ About 11× faster than realtime, and it regresses past 6 threads — the chip ha
 6 physical cores and SMT contention costs more than the extra threads return.
 `OMANTRA_THREADS` overrides the default.
 
-Parakeet v2 is English-only. For other languages, swap the model for
-`parakeet-tdt-0.6b-v3` or go back to `whisper.cpp` with `large-v3-turbo`.
+Parakeet v2 is English-only. Swapping it is a setting, not a rebuild:
+
+```bash
+omantra-fetch --list                              # what this knows how to run
+omantra-fetch parakeet-v3                         # 25 European languages
+omantra-config set OMANTRA_ASR_PROFILE parakeet-v3
+```
+
+or pick it from the settings panel, which offers the same list and says which
+ones are already on disk. See [Models](#models) for what a profile is and how
+to add one.
 
 ## Install
 
 ```bash
-git clone <this repo> ~/projects/omantra
-cd ~/projects/omantra
-./install.sh
+omarchy plugin add https://github.com/emdmed/omantra.git --enable
+~/.config/omarchy/plugins/io.github.emdmed.omantra/install.sh
+omantra-fetch     # ~1 GB of speech runtime, when you want it
 ```
 
-The installer pulls ~1 GB of runtime and models into `~/opt` and `~/models/asr`,
-symlinks `bin/` into `~/.local/bin`, and symlinks the checkout itself into
-`~/.config/omarchy/plugins/`. Both symlinks point back here, so there is no
-second copy to keep in sync: `omantra` on your PATH *is* `bin/omantra`, and an
-edit to it is what the next take runs. The QML is the exception — the shell
-loads this checkout but loads it once, so widget and panel edits need
+The first line is the Omarchy plugin installer: it clones the repo into
+`~/.config/omarchy/plugins/`, validates the manifest, and puts the widget in
+the bar. That much is the plugin, and it is a second and a few hundred
+kilobytes. The second line is the part a manifest cannot declare — it checks
+the commands this needs and symlinks `bin/` into `~/.local/bin`, so the
+keybindings and the terminal see the same scripts the widget runs.
+
+The third line is the gigabyte, and it is separate on purpose. `omarchy plugin
+add` should not download a speech model on your behalf, so nothing is fetched
+until you ask: `omantra-fetch` pulls sherpa-onnx into `~/opt` and Parakeet into
+`~/models/asr`, printing a progress bar, and re-running it repairs a download
+that died halfway rather than starting over.
+
+Skip it and the plugin still installs, still holds its place in the bar, and
+still opens its settings — the widget shows a download glyph and says the
+runtime is missing, and clicking it opens a terminal running `omantra-fetch`.
+The bar goes back to a microphone when that finishes, without a restart.
+`omantra-fetch --check` answers the same question from a terminal.
+
+`omarchy plugin update io.github.emdmed.omantra` pulls later versions, and
+`omarchy plugin remove io.github.emdmed.omantra` takes the plugin away —
+`./uninstall.sh` first if you also want the `~/.local/bin` links gone.
+
+To work on it instead, clone anywhere and run `./install.sh` from there: the
+plugin folder becomes a symlink back to your checkout, so `omantra` on your
+PATH *is* `bin/omantra` and an edit to it is what the next take runs. That
+shape is for development only — `omarchy plugin validate` rejects symlinks, so
+it is not a shape you can publish from. The QML is the exception either way:
+the shell loads the plugin once, so widget and panel edits need
 `omarchy restart shell` (see Notes).
 
 Then add the keybindings from `hypr/bindings.example.lua` to
@@ -249,6 +281,49 @@ OMANTRA_ENDPOINT=http://otherbox:8081/v1/chat/completions omantra "…"
 ```
 
 still tries a server without committing to it.
+
+## Models
+
+A model here is not a directory, which is the thing that makes swapping one
+harder than it looks. sherpa-onnx supports several model families and they do
+not share a command line: a NeMo transducer is three graphs and a
+`--model-type`, Whisper is two graphs under flags of its own with every file
+prefixed by the model stem (`tiny.en-encoder.int8.onnx`), SenseVoice is one
+file. Pointing a path at a different model gets you an unreadable error from
+the decoder.
+
+So the unit is a profile — a row in `lib/asr.sh`:
+
+```
+id | family | directory (= archive name) | precision | stem | note
+```
+
+and one function per family turns a row into flags. Everything else reads that:
+`omantra-transcribe` builds its command line from it, `omantra-fetch` derives
+the download URL and — this is the part worth having — derives *which files
+must exist* from the same flags it would pass. The check and the command cannot
+describe different files, so nothing can report a model as installed that the
+decoder then fails to open. `omantra-fetch` also verifies the archive unpacked
+to the names the row predicted, and says which it expected when it didn't.
+
+Shipped:
+
+| profile | size | notes |
+|---|---:|---|
+| `parakeet-v2` | 660 MB | English only. The default, and the fastest of these on a CPU. |
+| `parakeet-v3` | 464 MB | 25 European languages. |
+| `whisper-tiny.en` | 112 MB | English only, small and quick, noticeably less accurate. |
+
+Adding one from the [sherpa releases
+page](https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models) is a row,
+if its family is already there — and a row plus a `case` branch in `asr_args`
+if it isn't. `test/test_asr.sh` covers both families without a model, a desktop
+or a network.
+
+A model this doesn't know how to run at all is still reachable from the other
+end: set the widget's `transcribeCommand` to any executable that takes a wav
+path and prints the text, and none of the above applies — the bar stops asking
+whether *our* runtime is downloaded, because it is not what you are using.
 
 ## How command mode stays safe
 
@@ -517,16 +592,19 @@ the prose.
 
 ```
 manifest.json                 plugin declaration + settings schema
+LICENSE                       MIT
 BarWidget.qml                 the bar widget: the take machine, plus the agent count
 VoiceOverlay.qml              the "speak now" chip under the bar
 ConfigPanel.qml               the settings card — a front-end for omantra-config
 ReportPanel.qml               the markdown viewer — opens on the button, never by itself
 lib/config.sh                 paths, versions and defaults — sourced by everything
+lib/asr.sh                    the model table: which flags each family needs
 lib/actions.sh                the action + field tables, and the schema built from them
 lib/project.sh                slugify + find_project, the pure half of dispatch
 lib/theme.sh                  listing and matching installed Omarchy themes
 lib/app.sh                    listing and matching installed desktop entries
 lib/investigate.sh            the investigation store: ids, statuses, listing, pruning
+bin/omantra-fetch             download the speech runtime, on request
 bin/omantra-transcribe        audio file -> text
 bin/omantra-supertap          double-tap detector for the Super key
 bin/omantra-config            read and write ~/.config/omantra/config
@@ -535,7 +613,8 @@ bin/omantra-investigate       subject -> background agent -> report.md
 bin/omantra                   transcript -> LLM -> action
 test/                         `make test` — no model, desktop or network needed
 hypr/bindings.example.lua     keybindings to copy
-install.sh                    runtime, models, symlinks
+install.sh                    dependency check + symlinks (no downloads)
+uninstall.sh                  removes what install.sh put outside the plugin
 ```
 
 `BarWidget.qml` shells out rather than linking anything: `pw-record` writes the
@@ -583,23 +662,27 @@ Environment overrides, all read through `lib/config.sh`: `OMANTRA_THREADS`,
 `OMANTRA_MODEL`, `OMANTRA_SHERPA_BIN`, `OMANTRA_ENDPOINT`, `OMANTRA_PROJECTS`,
 `OMANTRA_AGENT` (defaults to `claude`), `OMANTRA_MAX_SECONDS`,
 `OMANTRA_TAP_WINDOW_MS`, `OMANTRA_LOG`, `OMANTRA_LOG_MAX_LINES`,
-`OMANTRA_CONFIG_FILE`, `OMANTRA_SEARCH_URL`. The ones the
+`OMANTRA_CONFIG_FILE`, `OMANTRA_SEARCH_URL`, `OMANTRA_ASR_PROFILE`. The ones the
 panel writes are also settable with `omantra-config set`; see
 `omantra-config keys` for the list.
 
 ## Notes
 
-- QML edits need `omarchy restart shell` in an installed checkout. The shell
-  hot-reloads files saved under `~/.config/omarchy/plugins/`, but this plugin is
-  a symlink to the repo, and the watcher does not follow it — a save changes
-  nothing, and `rescanPlugins` reloads the code while keeping the old IPC
-  surface, so a new IPC method needs the restart regardless.
+- QML edits need `omarchy restart shell`. The shell hot-reloads files saved
+  under `~/.config/omarchy/plugins/`, but a development checkout is reached
+  through a symlink and the watcher does not follow it — a save changes
+  nothing. Even installed directly, `rescanPlugins` reloads the code while
+  keeping the old IPC surface, so a new IPC method needs the restart regardless.
 - The `omantra` IPC target binds to one bar instance, so on multiple monitors
   only one screen's widget animates. Route through `broadcast` if that matters.
 - Recording caps at `maxSeconds` (default 300) and transcribes what it has
   rather than discarding it.
 
 ## Requirements
+
+About 1.1 GB on disk once `omantra-fetch` has run — 400 MB of sherpa-onnx in
+`~/opt` and 660 MB of Parakeet in `~/models/asr`, both shared with anything else
+that uses them and neither removed by `omarchy plugin remove`.
 
 Omarchy 4 (Quickshell shell), PipeWire, and `git ffmpeg jq curl wl-clipboard
 libnotify xdg-terminal-exec` — `git` because `new_project` initialises a repo,

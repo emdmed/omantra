@@ -17,7 +17,7 @@ import qs.Ui
 // same pipeline is reproducible from a terminal.
 BarWidget {
   id: root
-  moduleName: "enrique.omantra"
+  moduleName: "io.github.emdmed.omantra"
 
   readonly property string wavPath: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/omantra.wav"
 
@@ -26,8 +26,15 @@ BarWidget {
   readonly property string pluginDir: String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/$/, "")
 
   readonly property string transcribeCommand: setting("transcribeCommand", "") || (pluginDir + "/bin/omantra-transcribe")
+  // Whether the transcriber is the one that ships here — and so whether the
+  // bundled runtime is the thing that has to be on disk. Someone pointing this
+  // at whisper.cpp has their own models and their own idea of ready, and a
+  // widget that refused to record until *our* download finished would be
+  // wrong about a machine that was working fine.
+  readonly property bool bundledTranscriber: setting("transcribeCommand", "") === ""
   readonly property string interpreterCommand: setting("interpreterCommand", "") || (pluginDir + "/bin/omantra")
   readonly property string configCommand: pluginDir + "/bin/omantra-config"
+  readonly property string fetchCommand: pluginDir + "/bin/omantra-fetch"
   readonly property string investigateCommand: pluginDir + "/bin/omantra-investigate"
 
   // What the config panel wrote, reloaded whenever it saves. The scripts read
@@ -91,6 +98,23 @@ BarWidget {
   readonly property bool working: phase === "working"
   readonly property bool interpreting: phase === "interpreting"
   readonly property bool busy: recording || working
+
+  // A third strand, independent of both the take machine and the agents: is
+  // the ~1 GB of sherpa-onnx and Parakeet on disk at all? The plugin installs
+  // without it — a bar widget should not make `omarchy plugin add` download a
+  // gigabyte — so the widget has to be able to sit here usefully with no way
+  // to transcribe, say so, and offer the download rather than failing a take
+  // to explain itself.
+  //
+  //   unknown → ready
+  //           → missing → fetching → ready
+  //
+  // "unknown" is the beat before the first check answers, and behaves as ready:
+  // the check takes milliseconds, and a widget that flashed "not installed" on
+  // every shell start would be lying more often than it was right.
+  property string runtime: "unknown"
+  readonly property bool runtimeMissing: bundledTranscriber && runtime === "missing"
+  readonly property bool fetching: bundledTranscriber && runtime === "fetching"
 
   property int elapsed: 0
   property real level: 0
@@ -237,7 +261,8 @@ BarWidget {
   // glyph, and two identical mic icons in one bar is one too many. This one is
   // about speaking to the machine rather than about the input device.
   readonly property string glyph:
-    showingCommandGlyph ? "󰚩" : (recording ? "󰑊" : (working ? "󰔟" : "󰗋"))
+    runtimeMissing || fetching ? "󰇚"
+      : showingCommandGlyph ? "󰚩" : (recording ? "󰑊" : (working ? "󰔟" : "󰗋"))
 
   readonly property string elapsedLabel: {
     var m = Math.floor(elapsed / 60)
@@ -246,6 +271,8 @@ BarWidget {
   }
 
   readonly property string statusText: {
+    if (fetching) return "Downloading speech runtime (~1 GB) — watch the terminal"
+    if (runtimeMissing) return "Speech runtime not downloaded — click to get it (~1 GB)"
     if (recording) return (commandMode ? "Command " : "Recording ") + elapsedLabel + " — click to transcribe"
     if (working) return "Transcribing…"
     if (interpreting) return "Interpreting: " + lastText
@@ -256,6 +283,11 @@ BarWidget {
   }
 
   function start(requestedMode) {
+    // Nothing to record with yet. The click still means something — it means
+    // "get me the thing I am missing" — which is why this offers the download
+    // rather than beeping.
+    if (runtimeMissing) { fetch(); return }
+    if (fetching) return
     // Only idle takes a new take: "done"/"error" are still showing the last
     // result, and starting from there would be a take begun over a stale card.
     if (phase !== "idle" && phase !== "done" && phase !== "error" && phase !== "recopied") return
@@ -352,6 +384,25 @@ BarWidget {
 
   // Never over a live take: the panel takes the keyboard, and the overlay is
   // holding it for esc while the mic is hot.
+  // The download runs in a terminal rather than inside the widget, because a
+  // gigabyte over an unknown connection needs a progress bar and somewhere for
+  // curl to say what went wrong. The widget's job is to know when it finishes:
+  // omantra-fetch calls back over IPC on success, and the timer below covers
+  // the run that was closed, killed, or failed.
+  function fetch() {
+    if (fetching) return
+    runtime = "fetching"
+    Quickshell.execDetached({
+      command: ["xdg-terminal-exec", "--title=Omantra — downloading speech runtime",
+                "--", "bash", "-lc", "\"$1\"; echo; read -rsn1 -p 'Enter to close'", "_", fetchCommand]
+    })
+  }
+
+  function checkRuntime() {
+    if (!bundledTranscriber || checkProc.running) return
+    checkProc.running = true
+  }
+
   function openConfig() {
     if (busy) return
     configPanel.toggle()
@@ -421,7 +472,10 @@ BarWidget {
     id: configPanel
     screen: root.QsWindow.window ? root.QsWindow.window.screen : null
     configCommand: root.configCommand
-    onSaved: configProc.running = true
+    fetchCommand: root.fetchCommand
+    // A saved profile can change what has to be on disk, so the runtime
+    // question is asked again alongside the settings reload.
+    onSaved: { configProc.running = true; root.checkRuntime() }
   }
 
   // The store, as `omantra-investigate list --json` reports it. Started by the
@@ -477,6 +531,32 @@ BarWidget {
     interval: 30000
     repeat: true
     onTriggered: root.refreshInvestigations()
+  }
+
+  // Is there anything to transcribe with? Asked once at startup, again
+  // whenever a download says it is done, and on a slow poll while one is
+  // running. `omantra-fetch --check` is the same question the transcriber
+  // answers by failing, asked before a take rather than during one.
+  Process {
+    id: checkProc
+    // Not asked at all when the answer cannot matter — a custom transcriber
+    // leaves `runtime` at "unknown", which behaves as ready.
+    running: root.bundledTranscriber
+    command: [root.fetchCommand, "--check"]
+
+    onExited: function(exitCode) {
+      root.runtime = exitCode === 0 ? "ready" : "missing"
+    }
+  }
+
+  // The fallback, not the mechanism: omantra-fetch announces its own success.
+  // This catches the download that was cancelled, failed, or finished while
+  // the shell was restarting, so the bar cannot sit on "downloading" forever.
+  Timer {
+    running: root.fetching
+    interval: 5000
+    repeat: true
+    onTriggered: root.checkRuntime()
   }
 
   // The widget's copy of the settings the panel writes. Read once at startup
@@ -640,6 +720,12 @@ BarWidget {
     function mode(): string { return root.mode }
     function last(): string { return root.lastText }
     function config(): void { root.openConfig() }
+    // What bin/omantra-fetch calls when it finishes, and what a keybinding or a
+    // terminal can call after downloading the runtime by hand. Broadcast for
+    // the same reason the investigation count is: one bar per monitor, and a
+    // widget still saying "not downloaded" on the second screen is a bug.
+    function checkRuntime(): void { root.broadcast("checkRuntime") }
+    function runtime(): string { return root.runtime }
 
     // The background half. `investigations` is what bin/omantra-investigate
     // calls when a job starts and when it ends; it is broadcast because an IPC

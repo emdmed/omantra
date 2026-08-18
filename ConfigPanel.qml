@@ -23,6 +23,13 @@ PanelWindow {
 
   property bool open: false
   property string configCommand: ""
+  property string fetchCommand: ""
+
+  // The models this build knows how to run, as `omantra-fetch --list --json`
+  // reports them: id, one-line note, and whether it is on disk. Read here
+  // rather than written down again, because the table in lib/asr.sh is what
+  // actually decides what works.
+  property var profiles: []
 
   // Loaded values, as `omantra-config json` returned them. Save diffs against
   // this, so an untouched field is never written — a file the user hand-edited
@@ -43,6 +50,9 @@ PanelWindow {
     errorText = ""
     endpointState = ""
     loadProc.running = true
+    // Which models are on disk can change between openings — a download
+    // finished in the meantime — so this is reloaded with the settings.
+    if (fetchCommand !== "") profilesProc.running = true
     open = true
   }
 
@@ -66,6 +76,7 @@ PanelWindow {
     // than trusting a binding that may already be gone.
     investigatorField.text = cfg.OMANTRA_INVESTIGATOR || ""
     timeoutField.value = timeoutField.field.value = cfg.OMANTRA_INVESTIGATION_TIMEOUT || 900
+    modelDropdown.value = cfg.OMANTRA_ASR_PROFILE || "parakeet-v2"
     threadsField.value = threadsField.field.value = cfg.OMANTRA_THREADS || 6
     secondsField.value = secondsField.field.value = cfg.OMANTRA_MAX_SECONDS || 300
     copyToggle.checked = cfg.OMANTRA_COPY_CLIPBOARD === true
@@ -86,6 +97,7 @@ PanelWindow {
     diff("OMANTRA_PROJECTS", projectsField.text.trim())
     diff("OMANTRA_INVESTIGATOR", investigatorField.text.trim())
     diff("OMANTRA_INVESTIGATION_TIMEOUT", timeoutField.field.value)
+    diff("OMANTRA_ASR_PROFILE", modelDropdown.value)
     diff("OMANTRA_THREADS", threadsField.field.value)
     diff("OMANTRA_MAX_SECONDS", secondsField.field.value)
     diff("OMANTRA_COPY_CLIPBOARD", copyToggle.checked)
@@ -156,6 +168,23 @@ PanelWindow {
   }
 
   Process {
+    id: profilesProc
+    command: [root.fetchCommand, "--list", "--json"]
+    stdout: StdioCollector { waitForEnd: true }
+
+    onExited: function(exitCode) {
+      if (exitCode !== 0) return
+      try {
+        root.profiles = JSON.parse(String(profilesProc.stdout.text || "[]"))
+      } catch (e) {
+        // A panel that cannot read the list still edits every other setting,
+        // and the dropdown falls back to showing the saved value alone.
+        console.warn("omantra: could not parse model list: " + e)
+      }
+    }
+  }
+
+  Process {
     id: saveProc
     stderr: StdioCollector { waitForEnd: true }
 
@@ -187,12 +216,19 @@ PanelWindow {
   BorderSurface {
     id: card
 
+    // A window border is a literal pixel count — `border_size` in looknfeel.conf
+    // — so this edge is one too. The theme's `[popups] border-width` is 2 under
+    // most themes, which reads as a heavier frame than the windows the panel
+    // sits over, and `Style.space` would scale it further; matching the window
+    // manager means neither.
+    readonly property int edgeWidth: 1
+
     anchors.centerIn: parent
     width: Style.space(520)
     height: contentTopInset + column.implicitHeight + contentBottomInset
     padding: Style.space(28)
     color: Util.alpha(Color.background, 0.98)
-    borderSpec: Border.surfaceSpec("popups", "border", Color.popups.border, Math.max(1, Style.space(2)))
+    borderSpec: Border.withWidth(Border.surfaceSpec("popups", "border", Color.popups.border, edgeWidth), edgeWidth)
     radius: Style.cornerRadius
 
     Column {
@@ -352,6 +388,56 @@ PanelWindow {
 
       // ---------------------------------------------------------- recording
       PanelSectionHeader { text: "RECORDING" }
+
+      // Which model does the hearing. A dropdown rather than a path field
+      // because a model is not a directory here — the family decides how the
+      // decoder is called at all — so the choice has to come from the list
+      // that knows both.
+      Column {
+        width: parent.width
+        spacing: Style.space(6)
+
+        Dropdown {
+          id: modelDropdown
+          width: parent.width
+          label: "Speech model"
+          options: {
+            var out = []
+            for (var i = 0; i < root.profiles.length; i++) {
+              var p = root.profiles[i]
+              out.push({ value: p.id, label: p.ready ? p.id : p.id + " (not downloaded)" })
+            }
+            // Before the list arrives, and if it never does, the saved value
+            // is still a legitimate single choice — better than an empty
+            // dropdown that looks like the setting is gone.
+            if (out.length === 0 && modelDropdown.value !== "")
+              out.push({ value: modelDropdown.value, label: modelDropdown.value })
+            return out
+          }
+        }
+
+        // The note for whatever is selected, and — when it is not on disk —
+        // the one command that fixes that. The panel does not offer to
+        // download it: a gigabyte belongs in a terminal you can watch, and the
+        // bar already offers the same download for the model in use.
+        Text {
+          width: parent.width
+          wrapMode: Text.WordWrap
+          visible: text !== ""
+          color: Util.alpha(Color.popups.text, 0.6)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          text: {
+            for (var i = 0; i < root.profiles.length; i++) {
+              var p = root.profiles[i]
+              if (p.id !== modelDropdown.value) continue
+              return p.ready ? p.note
+                             : p.note + "  ·  not downloaded — run: omantra-fetch " + p.id
+            }
+            return ""
+          }
+        }
+      }
 
       Row {
         width: parent.width

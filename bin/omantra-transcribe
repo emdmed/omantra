@@ -12,12 +12,18 @@ if [ $# -lt 1 ]; then
 fi
 
 if [ ! -x "$OMANTRA_SHERPA_BIN/sherpa-onnx-offline" ]; then
-  echo "omantra-transcribe: sherpa-onnx not found at $OMANTRA_SHERPA_BIN — run install.sh" >&2
+  echo "omantra-transcribe: sherpa-onnx not found at $OMANTRA_SHERPA_BIN — run omantra-fetch" >&2
   exit 1
 fi
 
-if [ ! -f "$OMANTRA_MODEL/encoder.int8.onnx" ]; then
-  echo "omantra-transcribe: model not found at $OMANTRA_MODEL — run install.sh" >&2
+# What the model needs on disk, and which of it is absent — asked through the
+# same table that builds the command line below, so this cannot approve a model
+# the decoder then fails to open.
+if ! asr_ready "$OMANTRA_ASR_PROFILE"; then
+  echo "omantra-transcribe: $OMANTRA_ASR_PROFILE is not fully downloaded — run omantra-fetch" >&2
+  while IFS= read -r f; do
+    [ -f "$f" ] || echo "  missing: $f" >&2
+  done < <(asr_files "$OMANTRA_ASR_PROFILE")
   exit 1
 fi
 
@@ -43,12 +49,13 @@ fi
 # sherpa's own diagnostics go to stderr and its result to stdout. Keeping the
 # stderr rather than discarding it is the difference between "the model file is
 # truncated" and an empty failure the widget reports as `exit 1`.
+# The model half of the command line comes from the profile: a NeMo transducer
+# and a Whisper export do not take the same flags, and this is the one place
+# that difference is allowed to exist.
+mapfile -t model_flags < <(asr_args "$OMANTRA_ASR_PROFILE")
+
 if ! raw=$("$OMANTRA_SHERPA_BIN/sherpa-onnx-offline" \
-  --encoder="$OMANTRA_MODEL/encoder.int8.onnx" \
-  --decoder="$OMANTRA_MODEL/decoder.int8.onnx" \
-  --joiner="$OMANTRA_MODEL/joiner.int8.onnx" \
-  --tokens="$OMANTRA_MODEL/tokens.txt" \
-  --model-type=nemo_transducer \
+  "${model_flags[@]}" \
   --num-threads="$OMANTRA_THREADS" \
   "$wav" 2>"$err"); then
   echo "omantra-transcribe: sherpa-onnx failed" >&2

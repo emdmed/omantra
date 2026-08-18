@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "enrique.omantra",
+  "id": "io.github.emdmed.omantra",
   "name": "Omantra",
   "version": "1.0.0",
-  "author": "enrique",
+  "author": "emdmed",
   "license": "MIT",
   "description": "Speak to your desktop. Local speech-to-text, interpreted by a local LLM into desktop actions.",
   "kinds": [

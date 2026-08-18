@@ -158,6 +158,13 @@ PanelWindow {
   BorderSurface {
     id: chip
 
+    // A window border is a literal pixel count — `border_size` in looknfeel.conf
+    // — so this edge is one too. The theme's `[popups] border-width` is 2 under
+    // most themes, which reads as a heavier frame than the windows the panel
+    // sits over, and `Style.space` would scale it further; matching the window
+    // manager means neither.
+    readonly property int edgeWidth: 1
+
     // One text-line tall, so the chip reads as a strip of status rather than a
     // small card: every phase is the same height and only the width moves.
     readonly property int rowHeight: Style.space(20)
@@ -181,8 +188,8 @@ PanelWindow {
     // popup edge. It costs nothing and it is readable from the far side of the
     // screen, which is the reach the dim used to buy.
     borderSpec: root.live || root.phase === "error"
-      ? Border.flat(Util.alpha(root.accent, 0.9), Math.max(1, Style.space(2)))
-      : Border.surfaceSpec("popups", "border", Color.popups.border, Math.max(1, Style.space(2)))
+      ? Border.flat(Util.alpha(root.accent, 0.9), edgeWidth)
+      : Border.withWidth(Border.surfaceSpec("popups", "border", Color.popups.border, edgeWidth), edgeWidth)
     radius: Style.cornerRadius
 
     // The meter appearing, the keys leaving, a result arriving: each changes how
